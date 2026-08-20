@@ -41,11 +41,11 @@ This document serves as the pre-release and deployment gate checklist for publis
 
 ## 4. Release Execution
 
-- [ ] `CHANGELOG.md` updated with release date and final version header
-- [ ] Package version confirmed in `package.json` and `package-lock.json`
-- [ ] Initial git commit created
-- [ ] Remote GitHub repository linked and pushed
-- [ ] Package published to npm registry (`npm publish --access public`)
-- [ ] MCP Registry published (`mcp-publisher publish`)
-- [ ] Git version tag created (`git tag v0.1.0`)
-- [ ] GitHub release created with matching tag and changelog notes
+- [x] `CHANGELOG.md` updated with release date and final version header
+- [x] Package version confirmed in `package.json` and `package-lock.json`
+- [x] Initial git commit created
+- [x] Remote GitHub repository linked and pushed
+- [x] Package published to npm registry (`npm publish --access public`)
+- [x] MCP Registry published (`mcp-publisher publish`)
+- [x] Git version tag created (`git tag v0.1.0`)
+- [x] GitHub release created with matching tag and changelog notes
