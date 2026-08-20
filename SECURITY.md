@@ -70,3 +70,13 @@ By default, the server operates under the `safe` profile, exposing only harmless
 ### 8. Concurrency & Denial of Service Protection
 - An in-memory LRU cache with generation tracking and single-flight request coalescing prevents cache stampedes on duplicate concurrent requests.
 - Worker threads isolate CPU-heavy tasks from the main Node.js event loop with configurable task execution timeouts.
+
+### 9. Automated Release Pipeline Security
+- **Trusted Publishing / OIDC**: npm package publishing is automated through GitHub Actions using cryptographic OpenID Connect (OIDC) identity tokens. No long-lived `NPM_TOKEN` or publish secrets are stored or required. Publishing via OIDC requires `npm >= 11.5.1` and `Node >= 22.14.0` (pinned to `11.19.0` in the release workflow).
+- **npm Trust CLI Management**: Managing trusted publishers via the command line (`npm trust github ...`) requires `npm >= 11.15.0`. Alternatively, trusted publishers can be configured via the npmjs.com web interface.
+- **npm Provenance**: Packages published via the trusted release workflow automatically include verifiable npm provenance attestations linking published tarballs back to the exact source commit and GitHub Actions run.
+- **MCP Registry GitHub OIDC**: Official MCP Registry publication utilizes non-interactive `mcp-publisher login github-oidc` authentication with short-lived GitHub Actions identity tokens scoped to `io.github.eminyilmz/*`.
+- **Least Privilege Permissions**: Release jobs require explicit `id-token: write` and `contents: write` permissions, while standard validation and CI jobs remain strictly read-only (`contents: read`).
+- **Release Environment Protection**: Irreversible publication jobs run within the `release` GitHub Environment, allowing repository maintainers to enforce manual approval gates and required reviewer checks before publication proceeds.
+- **Immutable Version & Tag Enforcement**: Real releases require exact SemVer matching across `package.json`, `server.json`, and an immutable Git tag (`vX.Y.Z`) pointing directly to the checked-out commit. Dry-run validation tests the quality gate without requiring Git tags.
+

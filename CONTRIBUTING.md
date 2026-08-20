@@ -131,3 +131,44 @@ The MCP stdio transport communicates over standard input (`process.stdin`) and s
 2. Ensure `npm run typecheck`, `npm test`, `npm run security:package`, and `npm run smoke:package` pass.
 3. Fill out the pull request template completely.
 4. Maintain a clean commit history.
+
+---
+
+## 11. Release Process (Maintainers Only)
+
+General contributors do **not** trigger or publish releases.
+
+When preparing a new public version, maintainers follow this structured flow:
+
+1. **One-Time npm Trusted Publisher Setup** (performed once per package):
+   - **Web UI (Recommended)**: On [npmjs.com](https://www.npmjs.com/package/high-performance-mcp-server/access) under *Publishing Access*, add a Trusted Publisher for GitHub Actions:
+     - Organization/User: `eminyilmz`
+     - Repository: `high-performance-mcp-server`
+     - Workflow filename: `release.yml` *(must be `release.yml`, not a path)*
+     - Environment: `release`
+   - **CLI Alternative** (requires `npm >= 11.15.0`):
+     ```bash
+     npm trust github high-performance-mcp-server \
+       --repo eminyilmz/high-performance-mcp-server \
+       --file release.yml \
+       --env release \
+       --allow-publish
+     ```
+2. **Version Bump**: Update `version` in `package.json`, `server.json`, and `server.json.packages[0].version` synchronously (strict SemVer: `X.Y.Z`).
+3. **Changelog**: Document user-facing changes and security updates in `CHANGELOG.md` under `## [X.Y.Z] - YYYY-MM-DD`.
+4. **Regenerate & Test**: Run `npm run generate`, `npm run typecheck`, `npm test`, and `npm run build`.
+5. **Commit & Push**:
+   ```bash
+   git commit -am "chore(release): prepare vX.Y.Z"
+   git push origin main
+   ```
+6. **Dry-Run Validation**: Trigger the **Release** workflow via GitHub Actions (`workflow_dispatch`) with `version: X.Y.Z` and `dry_run: true` (no tag required for dry-run validation).
+7. **Tag Creation & Immutable Publication**:
+   - Create and push the release tag matching HEAD:
+     ```bash
+     git tag -a vX.Y.Z -m "vX.Y.Z"
+     git push origin vX.Y.Z
+     ```
+   - Trigger the **Release** workflow with `version: X.Y.Z` and `dry_run: false` (requires `vX.Y.Z` tag matching HEAD, publishes via OIDC, and creates GitHub Release).
+
+

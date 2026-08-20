@@ -1,51 +1,51 @@
-# Release Checklist
+# Release Checklist & Automation Gate
 
-This document serves as the pre-release and deployment gate checklist for publishing public releases of the **High-Performance MCP Server**.
-
----
-
-## 1. Identity & Credentials
-
-- [x] GitHub identity verified via authenticated GitHub account (`gh auth status`)
-- [x] Public commit email/privacy confirmed (`git config user.email` uses noreply or private email)
-- [x] npm identity verified via `npm whoami`
-- [x] npm package name rechecked immediately before publish (`npm view`)
-- [x] `mcpName` in `package.json` matches `server.json.name` exactly
-- [x] `mcp-publisher validate` passes with official 2025-12-11 schema
+This document serves as the pre-release checklist and automated release gate for publishing public releases of the **High-Performance MCP Server**.
 
 ---
 
-## 2. Quality & Release Gates
+## 1. Version Preparation & Metadata Synchronization
 
-- [x] Auto-generated files drift check: `npm run check:generated`
-- [x] TypeScript compilation: `npm run typecheck`
-- [x] Full test suites: `npm test`
-- [x] Production build: `npm run build`
-- [x] Repository candidate files security scan: `npm run security:repo`
-- [x] Package security & privacy scan: `npm run security:package`
-- [x] Package manifest & dry-run inspection: `npm run pack:check`
-- [x] End-to-end tarball installation smoke test: `npm run smoke:package`
+- [ ] Version updated synchronously in `package.json` (`version`)
+- [ ] Version updated synchronously in `server.json` (`version` and `packages[0].version`)
+- [ ] `mcpName` in `package.json` matches `server.json.name` (`io.github.eminyilmz/high-performance-mcp-server`)
+- [ ] `CHANGELOG.md` updated with new version section `## [X.Y.Z] - YYYY-MM-DD` and release notes
+- [ ] Code generator executed: `npm run generate`
+- [ ] Auto-generated files drift check passes: `npm run check:generated`
 
 ---
 
-## 3. Security & Dependency Audits
+## 2. Pre-Release Quality & Security Gates
 
-- [x] Dependency security audit: `npm audit --omit=dev` (0 vulnerabilities)
-- [x] Package payload verified: Zero source code, tests, or scripts included in tarball
-- [x] Host machine path privacy: Zero development absolute paths (`C:\...`, `/Users/...`) in compiled bundle
-- [x] Safe-by-default profile verified: Default binary execution exposes only `echo` and `ping`
-- [x] Workspace traversal & symlink escape unit tests pass 100%
-- [x] Prompt argument boundary escaping tests pass 100%
+- [ ] TypeScript compilation passes: `npm run typecheck`
+- [ ] Full test suites pass 100%: `npm test` (including release automation tests)
+- [ ] Production build succeeds: `npm run build`
+- [ ] Repository candidate security scan passes: `npm run security:repo`
+- [ ] Package payload security scan passes: `npm run security:package`
+- [ ] Package manifest & dry-run inspection: `npm run pack:check`
+- [ ] End-to-end tarball installation smoke test passes: `npm run smoke:package`
+- [ ] Dependency security audit clean: `npm audit --omit=dev` (0 vulnerabilities)
 
 ---
 
-## 4. Release Execution
+## 3. Git Tag & Commit Gate
 
-- [x] `CHANGELOG.md` updated with release date and final version header
-- [x] Package version confirmed in `package.json` and `package-lock.json`
-- [x] Initial git commit created
-- [x] Remote GitHub repository linked and pushed
-- [x] Package published to npm registry (`npm publish --access public`)
-- [x] MCP Registry published (`mcp-publisher publish`)
-- [x] Git version tag created (`git tag v0.1.0`)
-- [x] GitHub release created with matching tag and changelog notes
+- [ ] Release commit created on `main` branch
+- [ ] Annotated release tag created: `git tag -a vX.Y.Z -m "vX.Y.Z"`
+- [ ] Main branch and tag pushed to remote origin: `git push origin main --follow-tags`
+- [ ] Remote tag verified on GitHub and matches HEAD commit
+
+---
+
+## 4. Automated Release Pipeline Execution
+
+- [ ] npm Trusted Publisher configured on npmjs.com (or via `npm trust github` with `npm >= 11.15.0`) for `release.yml` and `release` environment
+- [ ] GitHub Environment `release` configured on GitHub with maintainer review approval gates
+- [ ] **Release Workflow Dry-Run**: Trigger `Release` workflow with `version: X.Y.Z` and `dry_run: true` (verifies all quality gates pass without requiring git tag)
+- [ ] **Release Workflow Publication**: Trigger `Release` workflow with `version: X.Y.Z` and `dry_run: false` (requires git tag matching HEAD)
+- [ ] npm package published via OIDC trusted publishing (`npmPublished = true`)
+- [ ] npm package provenance verified on npmjs.com
+- [ ] MCP Registry published via GitHub OIDC (`mcpRegistryPublished = true`)
+- [ ] MCP Registry API verified: `io.github.eminyilmz/high-performance-mcp-server@X.Y.Z` is active
+- [ ] GitHub Release `vX.Y.Z` created with generated release notes
+

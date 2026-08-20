@@ -301,9 +301,9 @@ For details, review [SECURITY.md](SECURITY.md).
 
 ---
 
-## Contributing
+## Contributing & Releases
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code style, test requirements, and contribution guidelines.
+Contributions and feedback are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on code style, tool development conventions, testing requirements, and the maintainer release workflow.
 
 ---
 
