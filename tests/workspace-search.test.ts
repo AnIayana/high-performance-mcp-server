@@ -18,58 +18,60 @@ function createSearchFixture(): {
   cleanup: () => void;
 } {
   const tempBase = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-search-test-"));
-  const rootDir = path.join(tempBase, "root");
+  const rawRootDir = path.join(tempBase, "root");
   const outsideDir = path.join(tempBase, "outside");
 
-  fs.mkdirSync(rootDir, { recursive: true });
+  fs.mkdirSync(rawRootDir, { recursive: true });
   fs.mkdirSync(outsideDir, { recursive: true });
 
-  // Files in root
-  fs.mkdirSync(path.join(rootDir, "src"), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, "docs"), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, "node_modules", "pkg"), { recursive: true });
-  fs.mkdirSync(path.join(rootDir, ".git"), { recursive: true });
+  const realRootDir = fs.realpathSync.native ? fs.realpathSync.native(rawRootDir) : fs.realpathSync(rawRootDir);
+  const realOutsideDir = fs.realpathSync.native ? fs.realpathSync.native(outsideDir) : fs.realpathSync(outsideDir);
 
-  fs.writeFileSync(path.join(rootDir, "README.md"), "# Search Fixture\n", "utf-8");
-  fs.writeFileSync(path.join(rootDir, "src", "index.ts"), 'console.log("hello world");\n', "utf-8");
-  fs.writeFileSync(path.join(rootDir, "src", "config.ts"), 'export const appConfig = "active";\n', "utf-8");
-  fs.writeFileSync(path.join(rootDir, "docs", "CONFIG.md"), "# Configuration Guide\n", "utf-8");
-  fs.writeFileSync(path.join(rootDir, "docs", "notes.txt"), "hello hello hello\n", "utf-8");
+  // Files in root
+  fs.mkdirSync(path.join(realRootDir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(realRootDir, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(realRootDir, "node_modules", "pkg"), { recursive: true });
+  fs.mkdirSync(path.join(realRootDir, ".git"), { recursive: true });
+
+  fs.writeFileSync(path.join(realRootDir, "README.md"), "# Search Fixture\n", "utf-8");
+  fs.writeFileSync(path.join(realRootDir, "src", "index.ts"), 'console.log("hello world");\n', "utf-8");
+  fs.writeFileSync(path.join(realRootDir, "src", "config.ts"), 'export const appConfig = "active";\n', "utf-8");
+  fs.writeFileSync(path.join(realRootDir, "docs", "CONFIG.md"), "# Configuration Guide\n", "utf-8");
+  fs.writeFileSync(path.join(realRootDir, "docs", "notes.txt"), "hello hello hello\n", "utf-8");
 
   // Ignored directory files
-  fs.writeFileSync(path.join(rootDir, "node_modules", "pkg", "index.js"), 'console.log("pkg");\n', "utf-8");
-  fs.writeFileSync(path.join(rootDir, ".git", "config"), "[core]\n", "utf-8");
+  fs.writeFileSync(path.join(realRootDir, "node_modules", "pkg", "index.js"), 'console.log("pkg");\n', "utf-8");
+  fs.writeFileSync(path.join(realRootDir, ".git", "config"), "[core]\n", "utf-8");
 
   // Binary file
   const binBuf = Buffer.from([0x00, 0x01, 0x02, 0x68, 0x65, 0x6c, 0x6c, 0x6f]);
-  fs.writeFileSync(path.join(rootDir, "binary.dat"), binBuf);
+  fs.writeFileSync(path.join(realRootDir, "binary.dat"), binBuf);
 
   // Large file (> 1 MiB)
   const largeBuf = Buffer.alloc(1048576 + 1024, "A");
-  fs.writeFileSync(path.join(rootDir, "large.txt"), largeBuf);
+  fs.writeFileSync(path.join(realRootDir, "large.txt"), largeBuf);
 
   // Outside file
-  fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret outside content\n", "utf-8");
+  fs.writeFileSync(path.join(realOutsideDir, "secret.txt"), "secret outside content\n", "utf-8");
 
   // Symlink directory to outside
-  const linkPath = path.join(rootDir, "link-to-outside");
+  const linkPath = path.join(realRootDir, "link-to-outside");
   try {
     if (process.platform === "win32") {
-      fs.symlinkSync(outsideDir, linkPath, "junction");
+      fs.symlinkSync(realOutsideDir, linkPath, "junction");
     } else {
-      fs.symlinkSync(outsideDir, linkPath);
+      fs.symlinkSync(realOutsideDir, linkPath);
     }
   } catch {
     // If symlink creation fails on unprivileged Windows, continue
   }
 
-  const realRootDir = fs.realpathSync(rootDir);
   const config: WorkspaceConfig = {
     roots: [
       {
         id: "root-1",
         name: "search-root",
-        path: rootDir,
+        path: realRootDir,
         realPath: realRootDir,
       },
     ],
@@ -83,7 +85,7 @@ function createSearchFixture(): {
     }
   };
 
-  return { tempBase, rootDir, outsideDir, config, cleanup };
+  return { tempBase, rootDir: realRootDir, outsideDir: realOutsideDir, config, cleanup };
 }
 
 test("Helper — normalizeExtensions parsing and validation", () => {
