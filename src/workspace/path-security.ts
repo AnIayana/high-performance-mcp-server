@@ -38,8 +38,16 @@ export function isInputAbsolute(inputPath: string): boolean {
  * Checks if target canonical path is strictly contained within root canonical path.
  */
 export function isContainedWithinRoot(rootRealPath: string, targetRealPath: string): boolean {
-  const rel = path.relative(rootRealPath, targetRealPath);
-  if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+  const normRoot = process.platform === "win32" ? rootRealPath.toLowerCase() : rootRealPath;
+  const normTarget = process.platform === "win32" ? targetRealPath.toLowerCase() : targetRealPath;
+  const rel = path.relative(normRoot, normTarget);
+  if (
+    rel === ".." ||
+    rel.startsWith(`..${path.sep}`) ||
+    rel.startsWith("../") ||
+    rel.startsWith("..\\") ||
+    path.isAbsolute(rel)
+  ) {
     return false;
   }
   return true;
@@ -109,7 +117,9 @@ export async function resolveExistingPathWithinRoot(
   // Canonicalize path (resolve symlinks / junctions)
   let realTargetPath: string;
   try {
-    realTargetPath = await fs.realpath(initialTargetPath);
+    realTargetPath = fs.realpath.native
+      ? await fs.realpath.native(initialTargetPath)
+      : await fs.realpath(initialTargetPath);
   } catch {
     throw new Error(`Path does not exist: "${relativePath}" within root "${root.name}".`);
   }

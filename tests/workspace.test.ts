@@ -16,7 +16,7 @@ function createWorkspaceFixture(): {
   cleanup: () => void;
 } {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-ws-test-"));
-  const realTempDir = fs.realpathSync(tempDir);
+  const realTempDir = fs.realpathSync.native ? fs.realpathSync.native(tempDir) : fs.realpathSync(tempDir);
 
   // Create directory structure
   fs.mkdirSync(path.join(realTempDir, "src"), { recursive: true });
@@ -38,7 +38,7 @@ function createWorkspaceFixture(): {
       {
         id: "root-1",
         name: "test-workspace",
-        path: tempDir,
+        path: realTempDir,
         realPath: realTempDir,
       },
     ],

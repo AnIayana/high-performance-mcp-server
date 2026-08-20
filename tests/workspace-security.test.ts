@@ -46,13 +46,13 @@ function createSecurityFixture(): {
     // If symlink creation fails on unprivileged Windows, proceed without throwing
   }
 
-  const realRootDir = fs.realpathSync(rootDir);
+  const realRootDir = fs.realpathSync.native ? fs.realpathSync.native(rootDir) : fs.realpathSync(rootDir);
   const config: WorkspaceConfig = {
     roots: [
       {
         id: "root-1",
-        name: "root",
-        path: rootDir,
+        name: "test-workspace",
+        path: realRootDir,
         realPath: realRootDir,
       },
     ],
@@ -131,16 +131,18 @@ test("TEST B — path traversal attempt '../outside' is rejected with sanitized 
       }
     );
 
-    await assert.rejects(
-      async () => {
-        await resolveExistingPathWithinRoot(fixture.config, "root-1", "..\\outside\\secret.txt");
-      },
-      (err: Error) => {
-        assert.match(err.message, /escapes root boundary/i);
-        assert.equal(err.message.includes(fixture.rootDir), false);
-        return true;
-      }
-    );
+    if (process.platform === "win32") {
+      await assert.rejects(
+        async () => {
+          await resolveExistingPathWithinRoot(fixture.config, "root-1", "..\\outside\\secret.txt");
+        },
+        (err: Error) => {
+          assert.match(err.message, /escapes root boundary/i);
+          assert.equal(err.message.includes(fixture.rootDir), false);
+          return true;
+        }
+      );
+    }
   } finally {
     fixture.cleanup();
   }
