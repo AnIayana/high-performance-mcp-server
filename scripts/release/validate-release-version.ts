@@ -101,6 +101,23 @@ export function validateReleaseMetadataInvariants(
 }
 
 /**
+ * Pure helper to validate that a tag commit matches the checked-out HEAD commit.
+ */
+export function validateTagCommitEquality(
+  headCommit: string,
+  tagCommit: string,
+  expectedTag: string
+): { valid: boolean; error?: string } {
+  if (!headCommit || !tagCommit || headCommit !== tagCommit) {
+    return {
+      valid: false,
+      error: `Git tag "${expectedTag}" points to commit ${tagCommit || "(none)"}, but workflow checked out ${headCommit || "(none)"}. Tag must match HEAD commit exactly.`,
+    };
+  }
+  return { valid: true };
+}
+
+/**
  * Verifies that the release tag exists and resolves to the current Git HEAD commit.
  */
 export function verifyGitTagForRelease(
@@ -111,12 +128,13 @@ export function verifyGitTagForRelease(
     const headCommit = execSync("git rev-parse HEAD", { cwd, encoding: "utf-8" }).trim();
     const tagCommit = execSync(`git rev-list -n 1 ${expectedTag}`, { cwd, encoding: "utf-8" }).trim();
 
-    if (headCommit !== tagCommit) {
+    const equality = validateTagCommitEquality(headCommit, tagCommit, expectedTag);
+    if (!equality.valid) {
       return {
         valid: false,
         headCommit,
         tagCommit,
-        error: `Git tag "${expectedTag}" points to commit ${tagCommit}, but workflow checked out ${headCommit}. Tag must match HEAD commit exactly.`,
+        error: equality.error,
       };
     }
 
