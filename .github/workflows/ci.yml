@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }}, Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: [22.x]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Verify Auto-Generated Files Drift
+        run: npm run check:generated
+
+      - name: Run Typecheck & Generators
+        run: npm run typecheck
+
+      - name: Run Test Suites
+        run: npm test
+
+      - name: Build Distribution Bundle
+        run: npm run build
+
+      - name: Repository Files Security & Privacy Scan
+        run: npm run security:repo
+
+      - name: Package Payload Security & Privacy Scan
+        run: npm run security:package
+
+      - name: End-to-End Package Installation Smoke Test
+        run: npm run smoke:package
+
