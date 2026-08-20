@@ -101,7 +101,7 @@ jobs:
           curl -sSL "$CHECKSUMS_URL" -o .tools/checksums.txt
           
           cd .tools
-          grep "mcp-publisher_linux_amd64.tar.gz" checksums.txt | sha256sum --check --status
+          grep -E "[[:space:]]mcp-publisher_linux_amd64\.tar\.gz$" checksums.txt | sha256sum --check --status
           tar -xzf mcp-publisher_linux_amd64.tar.gz
           chmod +x mcp-publisher
           ./mcp-publisher --version
@@ -213,14 +213,14 @@ jobs:
           curl -sSL "$CHECKSUMS_URL" -o .tools/checksums.txt
           
           cd .tools
-          grep "mcp-publisher_linux_amd64.tar.gz" checksums.txt | sha256sum --check --status
+          grep -E "[[:space:]]mcp-publisher_linux_amd64\.tar\.gz$" checksums.txt | sha256sum --check --status
           tar -xzf mcp-publisher_linux_amd64.tar.gz
           chmod +x mcp-publisher
           cd ..
 
       - name: Publish to MCP Registry (GitHub OIDC)
         run: |
-          STATE_JSON='${{ steps.state_check.outputs.state_check }}'
+          STATE_JSON='${{ steps.state_check.outputs.state_json }}'
           SHOULD_PUB_MCP=$(node -e "const s = JSON.parse(process.env.STATE_JSON); console.log(s.plan.shouldPublishMcpRegistry);" 2>/dev/null || echo "true")
           
           if [ "$SHOULD_PUB_MCP" = "true" ]; then
