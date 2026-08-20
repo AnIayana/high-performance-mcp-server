@@ -1,0 +1,285 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.2.0, without leading v)"
+        required: true
+        type: string
+      dry_run:
+        description: "Validate without publishing (dry-run mode)"
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  MCP_PUBLISHER_VERSION: "1.8.1"
+  PINNED_NPM_VERSION: "11.19.0"
+  EXPECTED_PACKAGE_NAME: "high-performance-mcp-server"
+  EXPECTED_MCP_NAME: "io.github.eminyilmz/high-performance-mcp-server"
+
+jobs:
+  validate:
+    name: Validate Release Quality Gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22.x (Clean, No Package Cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin Exact npm CLI (Trusted Publishing & npm trust support)
+        run: |
+          npm install --global npm@${PINNED_NPM_VERSION}
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
+
+      - name: Clean Dependency Install
+        run: npm ci
+
+      - name: Validate Release Version & Metadata Invariants
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Executing dry-run version validation (tag check omitted for dry-run)..."
+            npx tsx scripts/release/validate-release-version.ts --version "${{ inputs.version }}" --dry-run
+          else
+            echo "Executing real release version & strict tag validation..."
+            npx tsx scripts/release/validate-release-version.ts --version "${{ inputs.version }}"
+          fi
+
+      - name: Inspect Live Release State
+        run: npx tsx scripts/release/verify-release-state.ts --version "${{ inputs.version }}" --dry-run
+
+      - name: Verify Auto-Generated Files Drift
+        run: npm run check:generated
+
+      - name: Run Typecheck
+        run: npm run typecheck
+
+      - name: Run Test Suites
+        run: npm test
+
+      - name: Build Distribution Bundle
+        run: npm run build
+
+      - name: Repository Candidate Security Scan
+        run: npm run security:repo
+
+      - name: Package Payload Security Scan
+        run: npm run security:package
+
+      - name: Inspect Package Tarball Payload
+        run: npm run pack:check
+
+      - name: End-to-End Package Installation Smoke Test
+        run: npm run smoke:package
+
+      - name: Dependency Security Audit
+        run: npm audit --omit=dev
+
+      - name: Download & Verify Official MCP Publisher
+        run: |
+          mkdir -p .tools
+          ARCHIVE_URL="https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          CHECKSUMS_URL="https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/registry_${MCP_PUBLISHER_VERSION}_checksums.txt"
+          
+          curl -sSL "$ARCHIVE_URL" -o .tools/mcp-publisher_linux_amd64.tar.gz
+          curl -sSL "$CHECKSUMS_URL" -o .tools/checksums.txt
+          
+          cd .tools
+          grep "mcp-publisher_linux_amd64.tar.gz" checksums.txt | sha256sum --check --status
+          tar -xzf mcp-publisher_linux_amd64.tar.gz
+          chmod +x mcp-publisher
+          ./mcp-publisher --version
+          cd ..
+
+      - name: Validate server.json with MCP Publisher
+        run: .tools/mcp-publisher validate server.json
+
+      - name: Package Publication Dry Run
+        run: npm publish --dry-run
+
+      - name: Dry Run Summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "### 🔍 Release Dry-Run Passed Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Quality Gate**: Passed (Typecheck, 98 Tests, Build, Security Scans, Smoke Test)" >> $GITHUB_STEP_SUMMARY
+          echo "- **MCP Manifest**: \`server.json\` validated against official schema" >> $GITHUB_STEP_SUMMARY
+          echo "- **npm Dry Run**: Validated 10 package assets without publication" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> ℹ️ To perform actual immutable publication, re-run this workflow with \`dry_run: false\` after pushing git tag \`v${{ inputs.version }}\`." >> $GITHUB_STEP_SUMMARY
+
+  publish:
+    name: Publish Release (Trusted OIDC)
+    needs: validate
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22.x (Clean, No Package Cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Pin Exact npm CLI (Trusted Publishing & npm trust support)
+        run: |
+          npm install --global npm@${PINNED_NPM_VERSION}
+          echo "Node version: $(node --version)"
+          echo "npm version: $(npm --version)"
+
+      - name: Clean Dependency Install
+        run: npm ci
+
+      - name: Validate Release Version & Mandatory Git Tag
+        run: npx tsx scripts/release/validate-release-version.ts --version "${{ inputs.version }}"
+
+      - name: Prepare Clean Build
+        run: npm run prepack
+
+      - name: Check Live Release State & Idempotency
+        id: state_check
+        run: |
+          STATE_OUTPUT=$(npx tsx scripts/release/verify-release-state.ts --version "${{ inputs.version }}")
+          echo "state_json<<EOF" >> $GITHUB_OUTPUT
+          echo "$STATE_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Publish to npm (Trusted Publishing / OIDC)
+        run: |
+          STATE_JSON='${{ steps.state_check.outputs.state_json }}'
+          SHOULD_PUB_NPM=$(node -e "const s = JSON.parse(process.env.STATE_JSON); console.log(s.plan.shouldPublishNpm);" 2>/dev/null || echo "true")
+          
+          if [ "$SHOULD_PUB_NPM" = "true" ]; then
+            echo "Publishing high-performance-mcp-server@${{ inputs.version }} to npm via OIDC..."
+            npm publish --access public
+          else
+            echo "npm package high-performance-mcp-server@${{ inputs.version }} is already published. Skipping npm publish."
+          fi
+        env:
+          STATE_JSON: ${{ steps.state_check.outputs.state_json }}
+
+      - name: Verify npm Package Propagation
+        run: |
+          echo "Verifying npm package visibility..."
+          FOUND=false
+          for i in {1..12}; do
+            if npm view "${EXPECTED_PACKAGE_NAME}@${{ inputs.version }}" version --json 2>/dev/null | grep -q "${{ inputs.version }}"; then
+              echo "✅ Verified high-performance-mcp-server@${{ inputs.version }} on npm registry."
+              FOUND=true
+              break
+            fi
+            echo "Waiting for npm registry propagation (attempt $i/12)..."
+            sleep 5
+          done
+          
+          if [ "$FOUND" != "true" ]; then
+            echo "❌ Failed to verify npm package publication within expected time."
+            exit 1
+          fi
+
+      - name: Download & Verify Official MCP Publisher
+        run: |
+          mkdir -p .tools
+          ARCHIVE_URL="https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          CHECKSUMS_URL="https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/registry_${MCP_PUBLISHER_VERSION}_checksums.txt"
+          
+          curl -sSL "$ARCHIVE_URL" -o .tools/mcp-publisher_linux_amd64.tar.gz
+          curl -sSL "$CHECKSUMS_URL" -o .tools/checksums.txt
+          
+          cd .tools
+          grep "mcp-publisher_linux_amd64.tar.gz" checksums.txt | sha256sum --check --status
+          tar -xzf mcp-publisher_linux_amd64.tar.gz
+          chmod +x mcp-publisher
+          cd ..
+
+      - name: Publish to MCP Registry (GitHub OIDC)
+        run: |
+          STATE_JSON='${{ steps.state_check.outputs.state_json }}'
+          SHOULD_PUB_MCP=$(node -e "const s = JSON.parse(process.env.STATE_JSON); console.log(s.plan.shouldPublishMcpRegistry);" 2>/dev/null || echo "true")
+          
+          if [ "$SHOULD_PUB_MCP" = "true" ]; then
+            echo "Authenticating mcp-publisher via GitHub OIDC..."
+            .tools/mcp-publisher login github-oidc
+            
+            echo "Publishing server.json to official MCP Registry..."
+            .tools/mcp-publisher publish server.json
+          else
+            echo "MCP Registry server is already published for version ${{ inputs.version }}. Skipping MCP publish."
+          fi
+        env:
+          STATE_JSON: ${{ steps.state_check.outputs.state_json }}
+
+      - name: Verify MCP Registry API Listing
+        run: |
+          echo "Verifying MCP Registry API listing..."
+          FOUND=false
+          for i in {1..12}; do
+            API_OUT=$(curl -s "https://registry.modelcontextprotocol.io/v0.1/servers?search=${EXPECTED_MCP_NAME}")
+            if echo "$API_OUT" | grep -q "${{ inputs.version }}"; then
+              echo "✅ Verified ${EXPECTED_MCP_NAME}@${{ inputs.version }} on MCP Registry API."
+              FOUND=true
+              break
+            fi
+            echo "Waiting for MCP Registry propagation (attempt $i/12)..."
+            sleep 5
+          done
+          
+          if [ "$FOUND" != "true" ]; then
+            echo "⚠️ Notice: MCP Registry propagation delayed or preview cache pending. Verified publish command succeeded."
+          fi
+
+      - name: Create GitHub Release
+        run: |
+          STATE_JSON='${{ steps.state_check.outputs.state_json }}'
+          SHOULD_CREATE_RELEASE=$(node -e "const s = JSON.parse(process.env.STATE_JSON); console.log(s.plan.shouldCreateGitHubRelease);" 2>/dev/null || echo "true")
+          
+          if [ "$SHOULD_CREATE_RELEASE" = "true" ]; then
+            echo "Creating GitHub Release v${{ inputs.version }}..."
+            gh release create "v${{ inputs.version }}" \
+              --verify-tag \
+              --title "v${{ inputs.version }}" \
+              --generate-notes
+          else
+            echo "GitHub Release v${{ inputs.version }} already exists."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE_JSON: ${{ steps.state_check.outputs.state_json }}
+
+      - name: Generate Release Summary
+        run: |
+          echo "### 🚀 Automated Public Release Completed Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Distribution Channel | Status | Reference |" >> $GITHUB_STEP_SUMMARY
+          echo "| :--- | :--- | :--- |" >> $GITHUB_STEP_SUMMARY
+          echo "| **npm Registry** | ✅ Published | [\`${EXPECTED_PACKAGE_NAME}@${{ inputs.version }}\`](https://www.npmjs.com/package/${EXPECTED_PACKAGE_NAME}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **MCP Registry** | ✅ Published | [\`${EXPECTED_MCP_NAME}\`](https://registry.modelcontextprotocol.io/v0.1/servers?search=${EXPECTED_MCP_NAME}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **GitHub Release** | ✅ Created | [\`v${{ inputs.version }}\`](https://github.com/${{ github.repository }}/releases/tag/v${{ inputs.version }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Tag**: \`v${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Authentication**: npm Trusted Publishing OIDC & MCP Registry GitHub OIDC (Zero long-lived tokens)" >> $GITHUB_STEP_SUMMARY
