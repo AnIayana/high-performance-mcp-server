@@ -111,7 +111,21 @@ jobs:
         run: .tools/mcp-publisher validate server.json
 
       - name: Package Publication Dry Run
-        run: npm publish --dry-run
+        run: |
+          echo "Simulating package publication via npm publish --dry-run..."
+          set +e
+          OUTPUT=$(npm publish --dry-run 2>&1)
+          EXIT_CODE=$?
+          set -e
+          echo "$OUTPUT"
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "✅ npm publish --dry-run succeeded."
+          elif echo "$OUTPUT" | grep -qi "previously published"; then
+            echo "ℹ️ Version ${{ inputs.version }} is already published on npm. Packaging and dry-run validated."
+          else
+            echo "❌ Unexpected failure during npm publish --dry-run"
+            exit $EXIT_CODE
+          fi
 
       - name: Dry Run Summary
         if: ${{ inputs.dry_run }}
