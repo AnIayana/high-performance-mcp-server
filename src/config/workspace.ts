@@ -59,9 +59,7 @@ export async function resolveWorkspaceConfig(
 
     let realPath: string;
     try {
-      realPath = fs.realpath.native
-        ? await fs.realpath.native(absolutePath)
-        : await fs.realpath(absolutePath);
+      realPath = await fs.realpath(absolutePath);
     } catch {
       throw new Error(`Workspace root path does not exist: "${trimmed}" (resolved to "${absolutePath}").`);
     }

@@ -117,9 +117,7 @@ export async function resolveExistingPathWithinRoot(
   // Canonicalize path (resolve symlinks / junctions)
   let realTargetPath: string;
   try {
-    realTargetPath = fs.realpath.native
-      ? await fs.realpath.native(initialTargetPath)
-      : await fs.realpath(initialTargetPath);
+    realTargetPath = await fs.realpath(initialTargetPath);
   } catch {
     throw new Error(`Path does not exist: "${relativePath}" within root "${root.name}".`);
   }
