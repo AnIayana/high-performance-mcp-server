@@ -10,6 +10,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await delay(25);
+  }
+}
+
 test("TEST A — Worker unexpected error/exit single replacement and invariant", async (t) => {
   const crashScriptPath = path.resolve(__dirname, "fixtures/crash.worker.ts");
   const pool = new WorkerPool({
@@ -30,8 +38,8 @@ test("TEST A — Worker unexpected error/exit single replacement and invariant",
       await pool.execute("count_primes", { limit: 100 });
     });
 
-    // Wait briefly for exit event and single replacement
-    await delay(150);
+    // Wait for exit event and single replacement
+    await waitFor(() => pool.getStats().restartedWorkers === 1);
 
     const statsAfter = pool.getStats();
     assert.equal(statsAfter.configuredWorkers, 2);
@@ -62,8 +70,8 @@ test("TEST B — Timeout / terminate single replacement and failure count", asyn
       await pool.execute("count_primes", { limit: 100 });
     }, /timed out/i);
 
-    // Wait briefly for termination and exit event replacement
-    await delay(150);
+    // Wait for termination and exit event replacement
+    await waitFor(() => pool.getStats().restartedWorkers === 1);
 
     const statsAfter = pool.getStats();
     assert.equal(statsAfter.configuredWorkers, 2);
@@ -107,7 +115,7 @@ test("TEST D — Response ID mismatch rejection and worker recovery", async (t) 
   const pool = new WorkerPool({
     workerCount: 2,
     workerScriptPath: mismatchScriptPath,
-    taskTimeoutMs: 5000,
+    taskTimeoutMs: 1000,
   });
 
   try {
@@ -116,10 +124,10 @@ test("TEST D — Response ID mismatch rejection and worker recovery", async (t) 
     // Execute task where worker returns wrong ID
     await assert.rejects(async () => {
       await pool.execute("count_primes", { limit: 100 });
-    }, /response ID mismatch/i);
+    }, /Worker response ID mismatch/i);
 
-    // Wait for worker termination and replacement
-    await delay(150);
+    // Wait for worker replacement after mismatch termination
+    await waitFor(() => pool.getStats().restartedWorkers === 1);
 
     const stats = pool.getStats();
     assert.equal(stats.totalWorkers, 2, "totalWorkers MUST remain exactly 2");
