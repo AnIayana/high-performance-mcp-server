@@ -241,15 +241,37 @@ test("Cache Eligibility — Conservative v1 Rules", () => {
   assert.equal(checkCookie.reason, "set_cookie_present");
 
   // Ineligible: Vary: *
-  const checkVary = checkResponseCacheEligibility({
+  const checkVaryAsterisk = checkResponseCacheEligibility({
     targetUrl: new URL("https://example.com/data"),
     redirectCount: 0,
     status: 200,
     truncated: false,
     headers: { ...baseHeaders, vary: "*" },
   });
-  assert.equal(checkVary.eligible, false);
-  assert.equal(checkVary.reason, "vary_asterisk");
+  assert.equal(checkVaryAsterisk.eligible, false);
+  assert.equal(checkVaryAsterisk.reason, "vary_header_present");
+
+  // Ineligible: Vary: Accept (v1 policy: ANY Vary header is uncacheable)
+  const checkVaryAccept = checkResponseCacheEligibility({
+    targetUrl: new URL("https://example.com/data"),
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: { ...baseHeaders, vary: "Accept" },
+  });
+  assert.equal(checkVaryAccept.eligible, false);
+  assert.equal(checkVaryAccept.reason, "vary_header_present");
+
+  // Ineligible: Vary: Accept-Encoding, User-Agent
+  const checkVaryMulti = checkResponseCacheEligibility({
+    targetUrl: new URL("https://example.com/data"),
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: { ...baseHeaders, vary: "Accept-Encoding, User-Agent" },
+  });
+  assert.equal(checkVaryMulti.eligible, false);
+  assert.equal(checkVaryMulti.reason, "vary_header_present");
 
   // Ineligible: Compressed Content-Encoding
   const checkGzip = checkResponseCacheEligibility({
@@ -395,7 +417,7 @@ test("HttpConditionalCache — LRU Entry Eviction", () => {
 });
 
 test("HttpConditionalCache — MaxSize Logical Payload Eviction", () => {
-  // Max size is 1000 bytes. Each entry sizeCalculation includes body length + 128 overhead.
+  // Max size is 1024 bytes. Each entry sizeCalculation includes body length + 128 overhead.
   const cache = new HttpConditionalCache(
     createNetworkCachePolicy({
       enabled: true,
@@ -426,6 +448,104 @@ test("HttpConditionalCache — MaxSize Logical Payload Eviction", () => {
   assert.equal(cache.size, 1);
   assert.equal(cache.get("e1"), undefined);
   assert.ok(cache.get("e2"));
+});
+
+test("HttpConditionalCache — Large Validator Size Accounting (1000-byte ETag)", () => {
+  // Configured max size: 1024 bytes (1 KiB)
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 100,
+      maxSizeBytes: 1024,
+    })
+  );
+
+  // Small body (16 bytes), but large ETag (1000 bytes) + 128 metadata = 1144 bytes > 1024 maxSizeBytes
+  const largeEtag = `"${"x".repeat(998)}"`; // 1000 bytes string
+  const entry: CachedHttpResponse = {
+    bodyBuffer: Buffer.from("1234567890123456"), // 16 bytes
+    status: 200,
+    statusText: "OK",
+    contentType: "text/plain",
+    etag: largeEtag,
+    storedAt: Date.now(),
+  };
+
+  cache.set("large-etag-entry", entry);
+
+  // Under old `bodyBuffer.length + 128` (16 + 128 = 144 bytes), it would have been retained!
+  // Under accurate sizeCalculation (16 + 1000 + 10 + 2 + 128 = 1156 > 1024), it exceeds maxSize and is not retained.
+  assert.equal(cache.get("large-etag-entry"), undefined);
+  assert.equal(cache.size, 0);
+});
+
+test("HttpConditionalCache — Multi-Entry Logical Size Accounting with Metadata", () => {
+  // Configured max size: 1024 bytes (1 KiB)
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024,
+    })
+  );
+
+  // Each entry: 200 bytes body + 200 bytes ETag + 20 bytes Content-Type + 128 overhead = 548 bytes
+  // Two entries: ~1096 bytes > 1024 -> Inserting entry 2 evicts entry 1
+  const entry1: CachedHttpResponse = {
+    bodyBuffer: Buffer.alloc(200, "1"),
+    status: 200,
+    statusText: "OK",
+    contentType: "application/json",
+    etag: `"${"a".repeat(198)}"`,
+    storedAt: Date.now(),
+  };
+
+  const entry2: CachedHttpResponse = {
+    bodyBuffer: Buffer.alloc(200, "2"),
+    status: 200,
+    statusText: "OK",
+    contentType: "application/json",
+    etag: `"${"b".repeat(198)}"`,
+    storedAt: Date.now(),
+  };
+
+  cache.set("entry-1", entry1);
+  assert.equal(cache.size, 1);
+  assert.ok(cache.get("entry-1"));
+
+  // Body sizes alone (200 + 200 = 400) would fit in 1024!
+  // But body + metadata (548 + 548 = 1096) exceeds 1024 -> entry 1 must be evicted.
+  cache.set("entry-2", entry2);
+  assert.equal(cache.size, 1);
+  assert.equal(cache.get("entry-1"), undefined); // Evicted
+  assert.ok(cache.get("entry-2"));
+  assert.ok(cache.calculatedSize <= 1024);
+});
+
+test("HttpConditionalCache — Oversized Single Entry (> maxSizeBytes) Safe Rejection", () => {
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024, // 1 KiB limit
+    })
+  );
+
+  // Single entry whose logical payload is 2000 bytes > 1024
+  const oversizedEntry: CachedHttpResponse = {
+    bodyBuffer: Buffer.alloc(2000, "x"),
+    status: 200,
+    statusText: "OK",
+    contentType: "text/plain",
+    etag: '"oversized"',
+    storedAt: Date.now(),
+  };
+
+  // set() should not crash/throw, but LRUCache drops the entry immediately
+  cache.set("too-big", oversizedEntry);
+  assert.equal(cache.get("too-big"), undefined);
+  assert.equal(cache.size, 0);
+  assert.equal(cache.calculatedSize, 0);
 });
 
 test("HttpConditionalCache — Retention TTL Expiration", async () => {

@@ -383,17 +383,41 @@ test("CLI Parser — invalid network conditional cache options fail fast", () =>
   const invalidEnabled = parseCliArgs([], { MCP_NETWORK_CACHE_ENABLED: "not-bool" });
   assert.ok(invalidEnabled.error?.includes("Invalid MCP_NETWORK_CACHE_ENABLED"));
 
-  // Out of range max size bytes CLI
+  // Out of range max size bytes CLI (too low <= 0, too high > 64 MiB, non-integer)
+  const zeroSize = parseCliArgs(["--network-cache-max-size-bytes=0"], {});
+  assert.ok(zeroSize.error?.includes("Invalid --network-cache-max-size-bytes"));
+
   const lowSize = parseCliArgs(["--network-cache-max-size-bytes=500"], {});
   assert.ok(lowSize.error?.includes("Invalid --network-cache-max-size-bytes"));
 
-  // Out of range max entries CLI
+  const highSize = parseCliArgs(["--network-cache-max-size-bytes=999999999"], {});
+  assert.ok(highSize.error?.includes("Invalid --network-cache-max-size-bytes"));
+
+  const nonIntSize = parseCliArgs(["--network-cache-max-size-bytes=10.5"], {});
+  assert.ok(nonIntSize.error?.includes("Invalid --network-cache-max-size-bytes"));
+
+  // Out of range max entries CLI (<= 0, too high > 512, non-integer)
+  const zeroEntries = parseCliArgs(["--network-cache-max-entries=0"], {});
+  assert.ok(zeroEntries.error?.includes("Invalid --network-cache-max-entries"));
+
   const highEntries = parseCliArgs(["--network-cache-max-entries=1000"], {});
   assert.ok(highEntries.error?.includes("Invalid --network-cache-max-entries"));
 
-  // Out of range TTL CLI
+  const nonIntEntries = parseCliArgs(["--network-cache-max-entries=abc"], {});
+  assert.ok(nonIntEntries.error?.includes("Invalid --network-cache-max-entries"));
+
+  // Out of range TTL CLI (<= 0, too low < 1000, too high > 3600000, non-integer)
+  const zeroTtl = parseCliArgs(["--network-cache-ttl-ms=0"], {});
+  assert.ok(zeroTtl.error?.includes("Invalid --network-cache-ttl-ms"));
+
   const lowTtl = parseCliArgs(["--network-cache-ttl-ms=100"], {});
   assert.ok(lowTtl.error?.includes("Invalid --network-cache-ttl-ms"));
+
+  const highTtl = parseCliArgs(["--network-cache-ttl-ms=99999999"], {});
+  assert.ok(highTtl.error?.includes("Invalid --network-cache-ttl-ms"));
+
+  const nonIntTtl = parseCliArgs(["--network-cache-ttl-ms=two-minutes"], {});
+  assert.ok(nonIntTtl.error?.includes("Invalid --network-cache-ttl-ms"));
 
   // Duplicate singleton flag
   const dupCache = parseCliArgs(["--network-cache", "--network-cache"], {});

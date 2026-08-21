@@ -120,6 +120,30 @@ const MAX_LAST_MODIFIED_LENGTH = 256;
 const FORBIDDEN_CONTROL_CHARS_REGEX = /[\r\n\0\x00-\x1F\x7F]/;
 
 /**
+ * Computes the conservative logical payload size of a CachedHttpResponse.
+ * Includes bodyBuffer byteLength, variable string fields (etag, lastModified, contentType, statusText),
+ * and a fixed metadata overhead (128 bytes) for numeric and structural fields.
+ */
+export function calculateCachedEntrySize(entry: CachedHttpResponse): number {
+  let size = entry.bodyBuffer.byteLength;
+  if (entry.etag) {
+    size += Buffer.byteLength(entry.etag, "utf8");
+  }
+  if (entry.lastModified) {
+    size += Buffer.byteLength(entry.lastModified, "utf8");
+  }
+  if (entry.contentType) {
+    size += Buffer.byteLength(entry.contentType, "utf8");
+  }
+  if (entry.statusText) {
+    size += Buffer.byteLength(entry.statusText, "utf8");
+  }
+  // Fixed metadata overhead for status, contentLength, storedAt, and structural overhead
+  size += 128;
+  return size;
+}
+
+/**
  * Validates and sanitizes an ETag validator header.
  */
 export function sanitizeETag(rawEtag?: string): string | undefined {
@@ -222,11 +246,13 @@ export function checkResponseCacheEligibility(params: {
     return { eligible: false, reason: "set_cookie_present" };
   }
 
-  // 8. Check Vary: *
+  // 8. Check Vary header (Conservative v1: ANY Vary header renders response uncacheable)
   const varyRaw = headers["vary"];
-  const vary = Array.isArray(varyRaw) ? varyRaw.join(", ") : (varyRaw || "");
-  if (vary.trim() === "*" || vary.includes("*")) {
-    return { eligible: false, reason: "vary_asterisk" };
+  if (varyRaw !== undefined && varyRaw !== null) {
+    const vary = (Array.isArray(varyRaw) ? varyRaw.join(", ") : String(varyRaw)).trim();
+    if (vary.length > 0) {
+      return { eligible: false, reason: "vary_header_present" };
+    }
   }
 
   // 9. Check Content-Encoding (only absent or identity)
@@ -272,14 +298,7 @@ export class HttpConditionalCache {
         max: policy.maxEntries,
         maxSize: policy.maxSizeBytes,
         ttl: policy.retentionTtlMs,
-        sizeCalculation: (entry: CachedHttpResponse) => {
-          // Logical cached payload size = body bytes + validator lengths + content-type length + fixed metadata overhead
-          const bodyBytes = entry.bodyBuffer.byteLength;
-          const etagBytes = entry.etag ? Buffer.byteLength(entry.etag, "utf8") : 0;
-          const lmBytes = entry.lastModified ? Buffer.byteLength(entry.lastModified, "utf8") : 0;
-          const ctBytes = entry.contentType ? Buffer.byteLength(entry.contentType, "utf8") : 0;
-          return bodyBytes + etagBytes + lmBytes + ctBytes + 128;
-        },
+        sizeCalculation: (entry: CachedHttpResponse) => calculateCachedEntrySize(entry),
       });
     } else {
       this.lru = null;
