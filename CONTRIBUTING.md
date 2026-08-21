@@ -46,7 +46,7 @@ When creating or modifying an MCP tool in `src/tools/`:
 
    export const toolMeta: ToolMetadata = {
      name: "my_tool",
-     category: "workspace", // "safe" | "workspace" | "diagnostics" | "benchmark" | "admin"
+     category: "workspace", // "safe" | "workspace" | "network" | "diagnostics" | "benchmark" | "admin"
      description: "Clear and concise explanation of what the tool does",
    };
    ```
@@ -61,13 +61,26 @@ When creating or modifying an MCP tool in `src/tools/`:
 5. **Tool Categorization**:
    - `safe`: Lightweight, read-only utilities with zero access to host internals (e.g. echo, ping).
    - `workspace`: Read-only filesystem operations, search, and file inspection within allowlisted roots.
+   - `network`: SSRF-hardened, read-only outbound HTTP/HTTPS GET requests to public destinations.
    - `diagnostics`: System inspection, performance metrics, and telemetry.
    - `benchmark`: CPU-intensive workloads or load tests.
    - `admin`: Mutating operations (e.g. resetting cache, purging metrics).
 
 ---
 
-## 4. Workspace & Search Rules
+## 4. Network & Fetch Rules
+
+When contributing to network services or outbound fetching:
+1. **SSRF Defenses Mandatory**: All target addresses and redirect destinations must be validated against `net.BlockList` tables blocking loopback, private, link-local, carrier-grade NAT, cloud metadata, multicast, and transition IPv6 ranges.
+2. **Authoritative Socket Lookup**: Never allow the TCP socket to perform an independent, unverified DNS lookup. Always pass a custom security `lookup` hook to Node's request agents.
+3. **Strict Read-Only Semantics**: Only standard HTTP/HTTPS GET requests are permitted. No arbitrary custom headers, caller cookies, or auth tokens.
+4. **Bounded Buffers & Truncation**: Enforce strict size bounds (`maxBytes` default 1 MiB, max 5 MiB) and immediate socket destruction upon truncation.
+5. **Strict UTF-8 Textual Decoding**: Decode text with fatal UTF-8 rules (`{ fatal: true }`). Reject binary Content-Types and non-identity compressions.
+6. **Zero IP Disclosures**: Never leak internal IP addresses or socket error specifics in client-facing error messages.
+
+---
+
+## 5. Workspace & Search Rules
 
 When contributing to filesystem or workspace search capabilities:
 1. **Iterative Traversal Only**: Never use unbounded call-stack recursion for filesystem walking. Use queue-based iterative traversal.

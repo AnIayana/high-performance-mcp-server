@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - Unreleased
+
+### Added
+
+- Opt-in `network` tool profile exposing the SSRF-hardened `fetch_url` read-only HTTP/HTTPS GET tool.
+- Dedicated network security engine with mathematical IPv4/IPv6 classification (`net.BlockList`), custom socket `lookup` hooks preventing TOCTOU DNS rebinding, manual redirect re-validation (up to 5 redirects), and bounded stream decoding.
+- Profile-aware server instruction guidance for safe network resource access and untrusted content boundaries.
+
+### Security
+
+- Multi-layered SSRF protection blocking loopback, private (RFC 1918), link-local, carrier-grade NAT, cloud metadata (`169.254.169.254`), IPv4-mapped IPv6 (`::ffff:x.x.x.x`), IPv6 transition ranges, and multicast destinations.
+- Connection-time authoritative DNS lookup hook preventing DNS rebinding during socket establishment.
+- Explicit allowed port policy (`80`, `443`, `8080`, `8443`) and HTTPS-to-HTTP redirect downgrade prevention.
+- Bounded response streaming (1 MiB default, 5 MiB hard maximum), strict UTF-8 decoding (`fatal: true`), unsupported binary MIME rejection, and zero IP address disclosure in error messages.
+
 ## [0.1.0] - 2026-08-20
 
 ### Added

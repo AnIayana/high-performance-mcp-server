@@ -11,6 +11,7 @@ test("Tool Profile — safe profile filtering (Public Default)", () => {
   assert.equal(tools.length, 2);
   assert.ok(!toolNames.includes("workspace_roots"), "Must not expose filesystem by default");
   assert.ok(!toolNames.includes("search_files"), "Must not expose search by default");
+  assert.ok(!toolNames.includes("fetch_url"), "Must not expose network by default");
   assert.ok(!toolNames.includes("heavy_compute_main"), "Must not expose heavy compute by default");
   assert.ok(!toolNames.includes("system_stats"), "Must not expose host stats by default");
   assert.ok(!toolNames.includes("reset_cache"), "Must not expose reset actions by default");
@@ -34,6 +35,19 @@ test("Tool Profile — workspace profile filtering", () => {
     ].sort()
   );
   assert.equal(tools.length, 8);
+  assert.ok(!toolNames.includes("fetch_url"));
+  assert.ok(!toolNames.includes("heavy_compute_main"));
+  assert.ok(!toolNames.includes("system_stats"));
+});
+
+test("Tool Profile — network profile filtering", () => {
+  const tools = getToolsForProfile("network");
+  const toolNames = tools.map((t) => t.meta.name);
+
+  assert.deepEqual(toolNames.sort(), ["echo", "fetch_url", "ping"].sort());
+  assert.equal(tools.length, 3);
+  assert.ok(!toolNames.includes("workspace_roots"));
+  assert.ok(!toolNames.includes("search_files"));
   assert.ok(!toolNames.includes("heavy_compute_main"));
   assert.ok(!toolNames.includes("system_stats"));
 });
@@ -48,6 +62,7 @@ test("Tool Profile — diagnostics profile filtering", () => {
   );
   assert.equal(tools.length, 6);
   assert.ok(!toolNames.includes("workspace_roots"));
+  assert.ok(!toolNames.includes("fetch_url"));
   assert.ok(!toolNames.includes("search_files"));
   assert.ok(!toolNames.includes("heavy_compute_main"));
   assert.ok(!toolNames.includes("reset_cache"));
@@ -63,6 +78,7 @@ test("Tool Profile — benchmark profile filtering", () => {
   );
   assert.equal(tools.length, 5);
   assert.ok(!toolNames.includes("workspace_roots"));
+  assert.ok(!toolNames.includes("fetch_url"));
   assert.ok(!toolNames.includes("system_stats"));
   assert.ok(!toolNames.includes("reset_cache"));
 });
@@ -86,6 +102,7 @@ test("Tool Profile — admin profile filtering", () => {
   );
   assert.equal(tools.length, 8);
   assert.ok(!toolNames.includes("workspace_roots"));
+  assert.ok(!toolNames.includes("fetch_url"));
   assert.ok(!toolNames.includes("heavy_compute_main"));
 });
 
@@ -93,9 +110,10 @@ test("Tool Profile — all profile filtering", () => {
   const tools = getToolsForProfile("all");
   const toolNames = tools.map((t) => t.meta.name);
 
-  assert.equal(tools.length, 17);
+  assert.equal(tools.length, 18);
   assert.ok(toolNames.includes("echo"));
   assert.ok(toolNames.includes("ping"));
+  assert.ok(toolNames.includes("fetch_url"));
   assert.ok(toolNames.includes("workspace_roots"));
   assert.ok(toolNames.includes("list_directory"));
   assert.ok(toolNames.includes("file_info"));
@@ -116,11 +134,15 @@ test("Tool Profile — all profile filtering", () => {
 test("Tool Profile — helper validation and category permissions", () => {
   assert.equal(isValidToolProfile("safe"), true);
   assert.equal(isValidToolProfile("workspace"), true);
+  assert.equal(isValidToolProfile("network"), true);
   assert.equal(isValidToolProfile("diagnostics"), true);
   assert.equal(isValidToolProfile("invalid"), false);
 
   assert.equal(isCategoryAllowed("safe", "safe"), true);
   assert.equal(isCategoryAllowed("workspace", "safe"), false);
+  assert.equal(isCategoryAllowed("network", "safe"), false);
+  assert.equal(isCategoryAllowed("network", "network"), true);
+  assert.equal(isCategoryAllowed("workspace", "network"), false);
   assert.equal(isCategoryAllowed("workspace", "workspace"), true);
   assert.equal(isCategoryAllowed("diagnostics", "workspace"), false);
   assert.equal(isCategoryAllowed("diagnostics", "diagnostics"), true);

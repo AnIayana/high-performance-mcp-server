@@ -4,7 +4,7 @@ import type { ServerContext } from "../core/server-context.js";
 /**
  * Valid tool classification categories for security profile filtering.
  */
-export type ToolCategory = "safe" | "workspace" | "diagnostics" | "benchmark" | "admin";
+export type ToolCategory = "safe" | "workspace" | "diagnostics" | "benchmark" | "admin" | "network";
 
 export interface ToolMetadata {
   name: string;

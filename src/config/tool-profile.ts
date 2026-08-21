@@ -7,8 +7,9 @@ import type { ToolCategory } from "../tools/types.js";
  * Rationale:
  * - "safe": Non-intrusive utilities (echo, ping). Zero access to host filesystem,
  *   hardware metrics, CPU-heavy operations, or state mutation. Safe default for public exposure.
- * - "workspace": Adds explicit read-only filesystem tools (roots list, directory list, file info, text read)
+ * - "workspace": Adds explicit read-only filesystem tools (roots list, directory list, file info, text read, search)
  *   strictly restricted to allowlisted workspace root directories.
+ * - "network": Adds SSRF-hardened, read-only HTTP/HTTPS web fetching (fetch_url) for public web resources.
  * - "diagnostics": Adds observability tools (system stats, metrics, worker pool, cache stats)
  *   for telemetry and health monitoring without allowing state resets or high CPU consumption.
  * - "benchmark": Adds compute-heavy workloads (main-thread, worker pool, and cached prime counting)
@@ -19,6 +20,7 @@ import type { ToolCategory } from "../tools/types.js";
 export type ToolProfile =
   | "safe"
   | "workspace"
+  | "network"
   | "diagnostics"
   | "benchmark"
   | "admin"
@@ -27,6 +29,7 @@ export type ToolProfile =
 export const VALID_TOOL_PROFILES: readonly ToolProfile[] = [
   "safe",
   "workspace",
+  "network",
   "diagnostics",
   "benchmark",
   "admin",
@@ -38,10 +41,11 @@ export const DEFAULT_TOOL_PROFILE: ToolProfile = "safe";
 const PROFILE_ALLOWED_CATEGORIES: Record<ToolProfile, readonly ToolCategory[]> = {
   safe: ["safe"],
   workspace: ["safe", "workspace"],
+  network: ["safe", "network"],
   diagnostics: ["safe", "diagnostics"],
   benchmark: ["safe", "benchmark"],
   admin: ["safe", "diagnostics", "admin"],
-  all: ["safe", "workspace", "diagnostics", "benchmark", "admin"],
+  all: ["safe", "workspace", "network", "diagnostics", "benchmark", "admin"],
 };
 
 /**

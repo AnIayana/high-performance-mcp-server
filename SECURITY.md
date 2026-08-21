@@ -80,3 +80,46 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Release Environment Protection**: Irreversible publication jobs run within the `release` GitHub Environment, allowing repository maintainers to enforce manual approval gates and required reviewer checks before publication proceeds.
 - **Immutable Version & Tag Enforcement**: Real releases require exact SemVer matching across `package.json`, `server.json`, and an immutable Git tag (`vX.Y.Z`) pointing directly to the checked-out commit. Dry-run validation tests the quality gate without requiring Git tags.
 
+### 10. Network & SSRF Security (`fetch_url`)
+- **Explicit Profile Opt-In**: Outbound network fetching is disabled by default. It is exposed exclusively when `--profile=network` (or `--profile=all`) is active.
+- **Strict Read-Only Semantics**: Only standard HTTP/HTTPS GET requests are performed. No mutation verbs (`POST`, `PUT`, `DELETE`, `PATCH`), arbitrary custom headers, caller cookies, or authorization tokens are accepted.
+- **SSRF Subnet & Cloud Metadata Blocking**: All target IP addresses (both initial target and every redirect hop) are validated against `net.BlockList` tables:
+  - **IPv4**:
+    - `0.0.0.0/8` ("This network" / Unspecified - RFC 1122)
+    - `10.0.0.0/8` (Private-Use - RFC 1918)
+    - `100.64.0.0/10` (Carrier-Grade NAT - RFC 6598)
+    - `127.0.0.0/8` (Loopback - RFC 1122)
+    - `169.254.0.0/16` (Link-Local & Cloud Metadata `169.254.169.254` - RFC 3927)
+    - `172.16.0.0/12` (Private-Use - RFC 1918)
+    - `192.0.0.0/24` (IETF Protocol Assignments - RFC 6890)
+    - `192.0.2.0/24` (TEST-NET-1 Documentation - RFC 5737)
+    - `192.88.99.0/24` (6to4 Relay Anycast - RFC 7526)
+    - `192.168.0.0/16` (Private-Use - RFC 1918)
+    - `198.18.0.0/15` (Benchmarking - RFC 2544)
+    - `198.51.100.0/24` (TEST-NET-2 Documentation - RFC 5737)
+    - `203.0.113.0/24` (TEST-NET-3 Documentation - RFC 5737)
+    - `224.0.0.0/4` (Multicast - RFC 5771)
+    - `240.0.0.0/4` (Reserved for Future Use & Broadcast `255.255.255.255` - RFC 1112)
+  - **IPv6**:
+    - `::/128` (Unspecified - RFC 4291)
+    - `::1/128` (Loopback - RFC 4291)
+    - `::/96` (IPv4-Compatible IPv6 Deprecated - RFC 4291)
+    - `64:ff9b:1::/48` (Local-Use IPv4/IPv6 Translation - RFC 8215)
+    - `100::/64` (Discard-Only - RFC 6666)
+    - `2001::/32` (Teredo Tunneling - RFC 4380, entire prefix blocked in v0.2.0)
+    - `2001:20::/28` (ORCHIDv2 - RFC 7343)
+    - `2001:db8::/32` (Documentation - RFC 3849)
+    - `2002::/16` (6to4 Tunneling - RFC 3056, entire prefix blocked in v0.2.0)
+    - `fc00::/7` (Unique-Local Unicast - RFC 4193)
+    - `fe80::/10` (Link-Local Unicast - RFC 4291)
+    - `ff00::/8` (Multicast - RFC 4291)
+  - **Transition & IPv4-Mapped IPv6**: Embedded IPv4 addresses in `::ffff:0:0/96` and `64:ff9b::/96` are decomposed and classified against the full IPv4 policy.
+- **Authoritative Socket Lookup & DNS Rebinding Defenses**: Socket connection establishment receives a custom `lookup` function tied directly to the security resolver. TCP connections connect strictly to verified public IPs. If a hostname resolves to multiple IP addresses and *any* address is blocked, the entire hostname is rejected (All-or-Nothing rule).
+- **Port Allowlist**: Outbound requests are restricted to standard public web ports: `80`, `443`, `8080`, and `8443`.
+- **Redirect Controls**: Maximum 5 redirects. Every hop is re-validated against the full URL and IP policy. HTTPS-to-HTTP downgrade redirects are strictly rejected (`redirect_downgrade_not_allowed`).
+- **Resource Bounds & Truncation**: Default body size limit is 1 MiB (`DEFAULT_MAX_FETCH_BYTES`), with a hard upper bound of 5 MiB (`HARD_MAX_FETCH_BYTES`). Default timeout is 10 seconds (`DEFAULT_TIMEOUT_MS`), with a 30-second hard cap (`MAX_TIMEOUT_MS`). Streaming responses exceeding `maxBytes` are truncated with `truncated: true` and the underlying socket is immediately destroyed.
+- **Textual Content Decoding**: Responses must have textual Content-Types and are decoded with fatal UTF-8 rules (`new TextDecoder("utf-8", { fatal: true })`). Binary payloads and non-UTF-8 explicit charsets are rejected. Non-identity compression (`gzip`, `br`, `deflate`) is rejected.
+- **Client Error Sanitization**: Client-facing errors never leak internal IP addresses, local socket details, or DNS topologies.
+- **Untrusted External Data Boundary**: Fetched remote content is external untrusted data. Connected models are instructed not to treat remote web content as authoritative server instructions.
+- **Policy Scope & Inherent Limitations**: IP subnet blocklists prevent reaching non-public, loopback, link-local, cloud metadata, and private network address spaces. However, globally routable public IP addresses are considered network-eligible even if the underlying web application is organizationally restricted or requires network perimeter firewalls.
+

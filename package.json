@@ -1,6 +1,6 @@
 {
   "name": "high-performance-mcp-server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "High-performance, modular MCP v2 server with safe-by-default profiles, Streamable HTTP, stdio, worker threads, metrics, and LRU caching",
   "type": "module",
   "bin": {
@@ -24,7 +24,7 @@
     "smoke:package": "tsx scripts/package-smoke-test.ts",
     "security:package": "tsx scripts/package-security-check.ts",
     "security:repo": "tsx scripts/repository-security-check.ts",
-    "test": "tsx --test tests/worker-pool.test.ts tests/cache.test.ts tests/tool-profile.test.ts tests/cli.test.ts tests/build-meta.test.ts tests/server-instructions.test.ts tests/prompts.test.ts tests/workspace-security.test.ts tests/workspace.test.ts tests/workspace-search.test.ts tests/modern-protocol.test.ts tests/release-metadata.test.ts tests/release-automation.test.ts",
+    "test": "tsx --test tests/worker-pool.test.ts tests/cache.test.ts tests/tool-profile.test.ts tests/cli.test.ts tests/build-meta.test.ts tests/server-instructions.test.ts tests/prompts.test.ts tests/workspace-security.test.ts tests/workspace.test.ts tests/workspace-search.test.ts tests/modern-protocol.test.ts tests/release-metadata.test.ts tests/release-automation.test.ts tests/network-policy.test.ts tests/fetch-url.test.ts",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "start:stdio": "node dist/index.js --transport=stdio",
