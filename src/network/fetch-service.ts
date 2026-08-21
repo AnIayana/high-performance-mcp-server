@@ -3,6 +3,10 @@ import https from "node:https";
 import { URL } from "node:url";
 import { DefaultDnsResolver, createSafeLookupFunction } from "./dns.js";
 import {
+  calculateEffectiveMaxBytes,
+  calculateEffectiveTimeoutMs,
+} from "./operator-policy.js";
+import {
   DEFAULT_ALLOWED_PORTS,
   DEFAULT_FETCH_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -81,27 +85,23 @@ function isMediaTypeAllowed(mediaType: string): boolean {
  * 5. Bounded streaming (hard byte bounds, stream destroyed immediately on limit).
  * 6. Strict UTF-8 text decoding (fatal: true) and binary NUL byte rejection.
  * 7. Zero IP disclosure in error messages.
+ * 8. Operator-configured egress policy (allowlist, denylist, HTTPS-only, resource caps).
  */
 export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUrlResult> {
   const allowedPorts = options.customAllowedPorts ?? DEFAULT_ALLOWED_PORTS;
   const resolver: SafeDnsResolver = options.customResolver ?? new DefaultDnsResolver();
+  const operatorPolicy = options.operatorPolicy;
+  const allowLoopbackForTesting = options.allowLoopbackForTesting ?? false;
 
-  // Validate timeout
-  const minTimeout = options.allowLoopbackForTesting ? 10 : 1000;
-  let timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
-  if (typeof timeoutMs !== "number" || isNaN(timeoutMs) || timeoutMs < minTimeout) {
-    timeoutMs = DEFAULT_FETCH_TIMEOUT_MS;
-  } else if (timeoutMs > MAX_FETCH_TIMEOUT_MS) {
-    timeoutMs = MAX_FETCH_TIMEOUT_MS;
-  }
+  // Calculate effective timeout bounded by operator cap and caller request
+  const timeoutMs = calculateEffectiveTimeoutMs(
+    options.timeoutMs,
+    operatorPolicy,
+    allowLoopbackForTesting
+  );
 
-  // Validate maxBytes
-  let maxBytes = options.maxBytes ?? DEFAULT_FETCH_MAX_BYTES;
-  if (typeof maxBytes !== "number" || isNaN(maxBytes) || maxBytes < 1) {
-    maxBytes = DEFAULT_FETCH_MAX_BYTES;
-  } else if (maxBytes > MAX_FETCH_MAX_BYTES) {
-    maxBytes = MAX_FETCH_MAX_BYTES;
-  }
+  // Calculate effective maxBytes bounded by operator cap and caller request
+  const maxBytes = calculateEffectiveMaxBytes(options.maxBytes, operatorPolicy);
 
   // Overall deadline timer setup
   const overallTimeoutController = new AbortController();
@@ -124,8 +124,12 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
   overallTimeoutController.signal.addEventListener("abort", onTimeoutAbort, { once: true });
 
   const requestedUrl = options.url;
-  const allowLoopbackForTesting = options.allowLoopbackForTesting ?? false;
-  let currentUrl = validateAndParseUrl(requestedUrl, allowedPorts, allowLoopbackForTesting);
+  let currentUrl = validateAndParseUrl(
+    requestedUrl,
+    allowedPorts,
+    allowLoopbackForTesting,
+    operatorPolicy
+  );
   let redirectCount = 0;
 
   try {
@@ -175,8 +179,13 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
           );
         }
 
-        // Re-validate the redirect destination URL against full policy
-        currentUrl = validateAndParseUrl(nextUrl.href, allowedPorts, allowLoopbackForTesting);
+        // Re-validate the redirect destination URL against full operator & built-in policy
+        currentUrl = validateAndParseUrl(
+          nextUrl.href,
+          allowedPorts,
+          allowLoopbackForTesting,
+          operatorPolicy
+        );
         continue;
       }
 
@@ -526,10 +535,6 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
         signal.removeEventListener("abort", abortHandler);
         cleanup();
 
-        if (err instanceof NetworkSecurityError) {
-          return reject(err);
-        }
-
         if (err.code === "EBLOCKEDDESTINATION" || err.message?.includes("Destination is not allowed")) {
           return reject(
             new NetworkSecurityError(
@@ -537,6 +542,10 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
               "Destination is not allowed by network security policy."
             )
           );
+        }
+
+        if (err instanceof NetworkSecurityError) {
+          return reject(err);
         }
 
         if (err.code === "ENOTFOUND" || err.syscall === "getaddrinfo") {

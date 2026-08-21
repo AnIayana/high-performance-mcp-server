@@ -12,6 +12,9 @@ export type NetworkErrorCode =
   | "redirect_limit"
   | "invalid_redirect"
   | "redirect_downgrade_not_allowed"
+  | "host_not_allowed"
+  | "host_denied"
+  | "https_required"
   | "timeout"
   | "unsupported_content_type"
   | "unsupported_content_encoding"
@@ -58,6 +61,7 @@ export interface FetchUrlOptions {
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  readonly operatorPolicy?: import("./operator-policy.js").NetworkOperatorPolicy;
   /** Test-only dependency injection for safe testing with ephemeral ports and local mock servers */
   readonly customResolver?: SafeDnsResolver;
   readonly customAllowedPorts?: readonly number[];

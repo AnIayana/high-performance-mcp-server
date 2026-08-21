@@ -171,7 +171,151 @@ test("CLI Helpers — getHelpText and getPackageVersion", () => {
   assert.ok(help.includes("--root="));
   assert.ok(help.includes("MCP_ROOTS_JSON"));
   assert.ok(help.includes("--list-tools"));
+  assert.ok(help.includes("--network-allow-host"));
+  assert.ok(help.includes("--network-deny-host"));
+  assert.ok(help.includes("--network-https-only"));
+  assert.ok(help.includes("--network-max-response-bytes"));
+  assert.ok(help.includes("--network-max-timeout-ms"));
+  assert.ok(help.includes("MCP_NETWORK_ALLOW_HOSTS_JSON"));
 
   const version = getPackageVersion();
   assert.match(version, /^\d+\.\d+\.\d+/);
 });
+
+test("CLI Parser — network operator policy CLI flags parsing and normalization", () => {
+  const config = parseCliArgs(
+    [
+      "--profile=network",
+      "--network-allow-host=example.com",
+      "--network-allow-host=*.github.com",
+      "--network-deny-host=ads.example.com",
+      "--network-https-only",
+      "--network-max-response-bytes=262144",
+      "--network-max-timeout-ms=5000",
+    ],
+    {}
+  );
+
+  assert.equal(config.error, undefined);
+  assert.deepEqual(config.networkPolicy.allowHosts, ["example.com", "*.github.com"]);
+  assert.deepEqual(config.networkPolicy.denyHosts, ["ads.example.com"]);
+  assert.equal(config.networkPolicy.httpsOnly, true);
+  assert.equal(config.networkPolicy.maxResponseBytes, 262144);
+  assert.equal(config.networkPolicy.maxTimeoutMs, 5000);
+});
+
+test("CLI Parser — network operator policy space-separated option values", () => {
+  const config = parseCliArgs(
+    [
+      "--profile",
+      "network",
+      "--network-allow-host",
+      "api.test.org",
+      "--network-deny-host",
+      "bad.test.org",
+      "--network-max-response-bytes",
+      "1048576",
+      "--network-max-timeout-ms",
+      "15000",
+    ],
+    {}
+  );
+
+  assert.equal(config.error, undefined);
+  assert.deepEqual(config.networkPolicy.allowHosts, ["api.test.org"]);
+  assert.deepEqual(config.networkPolicy.denyHosts, ["bad.test.org"]);
+  assert.equal(config.networkPolicy.maxResponseBytes, 1048576);
+  assert.equal(config.networkPolicy.maxTimeoutMs, 15000);
+});
+
+test("CLI Parser — network operator policy environment variables", () => {
+  const config = parseCliArgs([], {
+    MCP_NETWORK_ALLOW_HOSTS_JSON: '["example.com", "*.githubusercontent.com"]',
+    MCP_NETWORK_DENY_HOSTS_JSON: '["evil.com"]',
+    MCP_NETWORK_HTTPS_ONLY: "true",
+    MCP_NETWORK_MAX_RESPONSE_BYTES: "524288",
+    MCP_NETWORK_MAX_TIMEOUT_MS: "8000",
+  });
+
+  assert.equal(config.error, undefined);
+  assert.deepEqual(config.networkPolicy.allowHosts, [
+    "example.com",
+    "*.githubusercontent.com",
+  ]);
+  assert.deepEqual(config.networkPolicy.denyHosts, ["evil.com"]);
+  assert.equal(config.networkPolicy.httpsOnly, true);
+  assert.equal(config.networkPolicy.maxResponseBytes, 524288);
+  assert.equal(config.networkPolicy.maxTimeoutMs, 8000);
+});
+
+test("CLI Parser — CLI options override environment variables (no merging)", () => {
+  const config = parseCliArgs(
+    [
+      "--network-allow-host=override.com",
+      "--network-deny-host=denied.com",
+      "--network-max-response-bytes=100000",
+      "--network-max-timeout-ms=4000",
+    ],
+    {
+      MCP_NETWORK_ALLOW_HOSTS_JSON: '["env1.com", "env2.com"]',
+      MCP_NETWORK_DENY_HOSTS_JSON: '["env-deny.com"]',
+      MCP_NETWORK_MAX_RESPONSE_BYTES: "500000",
+      MCP_NETWORK_MAX_TIMEOUT_MS: "20000",
+    }
+  );
+
+  assert.equal(config.error, undefined);
+  assert.deepEqual(config.networkPolicy.allowHosts, ["override.com"]);
+  assert.deepEqual(config.networkPolicy.denyHosts, ["denied.com"]);
+  assert.equal(config.networkPolicy.maxResponseBytes, 100000);
+  assert.equal(config.networkPolicy.maxTimeoutMs, 4000);
+});
+
+test("CLI Parser — invalid network CLI options fail fast", () => {
+  // Invalid hostname (contains scheme)
+  const invalidHost = parseCliArgs(["--network-allow-host=https://example.com"], {});
+  assert.ok(invalidHost.error?.includes("Invalid --network-allow-host option"));
+
+  // IP literal rejected
+  const ipHost = parseCliArgs(["--network-allow-host=127.0.0.1"], {});
+  assert.ok(ipHost.error?.includes("IP literals are not allowed"));
+
+  // Forbidden hostname rejected
+  const localHost = parseCliArgs(["--network-allow-host=localhost"], {});
+  assert.ok(localHost.error?.includes("Localhost and private hostnames"));
+
+  // Invalid max response bytes (out of range)
+  const outOfRangeBytes = parseCliArgs(["--network-max-response-bytes=99999999"], {});
+  assert.ok(outOfRangeBytes.error?.includes("Invalid --network-max-response-bytes option"));
+
+  // Invalid timeout (too low)
+  const lowTimeout = parseCliArgs(["--network-max-timeout-ms=500"], {});
+  assert.ok(lowTimeout.error?.includes("Invalid --network-max-timeout-ms option"));
+
+  // Duplicate singleton option
+  const dupHttps = parseCliArgs(["--network-https-only", "--network-https-only"], {});
+  assert.ok(dupHttps.error?.includes("Duplicate option specified: \"--network-https-only\""));
+});
+
+test("CLI Parser — invalid network environment variables fail fast", () => {
+  const invalidJson = parseCliArgs([], {
+    MCP_NETWORK_ALLOW_HOSTS_JSON: "not-json",
+  });
+  assert.ok(invalidJson.error?.includes("Invalid MCP_NETWORK_ALLOW_HOSTS_JSON"));
+
+  const invalidArrayType = parseCliArgs([], {
+    MCP_NETWORK_ALLOW_HOSTS_JSON: '{"host":"example.com"}',
+  });
+  assert.ok(invalidArrayType.error?.includes("Must be a valid JSON array"));
+
+  const invalidHttpsOnly = parseCliArgs([], {
+    MCP_NETWORK_HTTPS_ONLY: "maybe",
+  });
+  assert.ok(invalidHttpsOnly.error?.includes("Invalid MCP_NETWORK_HTTPS_ONLY"));
+
+  const invalidTimeout = parseCliArgs([], {
+    MCP_NETWORK_MAX_TIMEOUT_MS: "invalid",
+  });
+  assert.ok(invalidTimeout.error?.includes("Invalid MCP_NETWORK_MAX_TIMEOUT_MS"));
+});
+
