@@ -1041,3 +1041,104 @@ test("fetchUrlService — Operator maxResponseBytes clamps response truncation",
   }
 });
 
+test("fetchUrlService — Operator allowlist with Mixed DNS (public + private IP) rejects hostname with blocked_destination", async () => {
+  // Even if operator configured allowHosts = ["safe-looking.example"]
+  // If safe-looking.example resolves to mixed [93.184.216.34, 10.0.0.1], the all-or-nothing SSRF rule must reject it
+  const mixedResolver: SafeDnsResolver = {
+    async resolve(_hostname: string) {
+      return [
+        { address: "93.184.216.34", family: 4 },
+        { address: "10.0.0.1", family: 4 },
+      ];
+    },
+  };
+
+  const policy = {
+    allowHosts: ["safe-looking.example"],
+    denyHosts: [],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://safe-looking.example/data",
+        operatorPolicy: policy,
+        customResolver: mixedResolver,
+        customAllowedPorts: [80],
+        allowLoopbackForTesting: false,
+      });
+    },
+    (err: any) =>
+      err instanceof NetworkSecurityError &&
+      err.code === "blocked_destination" &&
+      err.message === "Destination is not allowed by network security policy."
+  );
+});
+
+test("fetchUrlService — Raw public IP literal is rejected when operator hostname allowlist is active", async () => {
+  const policy = {
+    allowHosts: ["example.com"],
+    denyHosts: [],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://93.184.216.34/data",
+        operatorPolicy: policy,
+        customAllowedPorts: [80],
+        allowLoopbackForTesting: false,
+      });
+    },
+    (err: any) =>
+      err instanceof NetworkSecurityError &&
+      err.code === "host_not_allowed" &&
+      err.message === "Destination hostname is not allowed by server network policy."
+  );
+});
+
+test("fetchUrlService — Operator maxTimeoutMs bounds request deadline", async () => {
+  const server = http.createServer((_req, _res) => {
+    // Intentionally never respond or hang
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const policy = {
+    allowHosts: [],
+    denyHosts: [],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30, // Operator clamps to 30ms for fast testing
+  };
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/`,
+          timeoutMs: 30_000, // Caller asks for 30s
+          operatorPolicy: policy,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "timeout" &&
+        err.message === "Network request was cancelled or timed out."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+

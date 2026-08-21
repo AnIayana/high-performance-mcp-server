@@ -151,6 +151,24 @@ export function normalizeHostPattern(pattern: string): string {
 }
 
 /**
+ * Canonicalizes a runtime target hostname to ASCII Punycode and lower-case without trailing dot.
+ */
+export function normalizeRuntimeHostname(hostname: string): string {
+  if (typeof hostname !== "string") return "";
+  let trimmed = hostname.trim().toLowerCase();
+  if (trimmed.endsWith(".")) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  if (trimmed.length === 0) return "";
+  try {
+    const dummyUrl = new URL(`http://${trimmed}`);
+    return dummyUrl.hostname.toLowerCase();
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
  * Checks whether a runtime normalized hostname matches a configured pattern.
  *
  * Pattern semantics:
@@ -158,10 +176,7 @@ export function normalizeHostPattern(pattern: string): string {
  * - "*.example.com" matches subdomains "api.example.com", "a.b.example.com", but NOT apex "example.com"
  */
 export function matchesHostPattern(targetHostname: string, pattern: string): boolean {
-  let normalizedTarget = targetHostname.trim().toLowerCase();
-  if (normalizedTarget.endsWith(".")) {
-    normalizedTarget = normalizedTarget.slice(0, -1);
-  }
+  const normalizedTarget = normalizeRuntimeHostname(targetHostname);
 
   if (pattern.startsWith("*.")) {
     const suffix = pattern.slice(1); // e.g. ".example.com"
@@ -183,10 +198,7 @@ export function evaluateHostnamePolicy(
   hostname: string,
   policy: NetworkOperatorPolicy
 ): { allowed: boolean; reason?: "host_denied" | "host_not_allowed" } {
-  let normalizedTarget = hostname.trim().toLowerCase();
-  if (normalizedTarget.endsWith(".")) {
-    normalizedTarget = normalizedTarget.slice(0, -1);
-  }
+  const normalizedTarget = normalizeRuntimeHostname(hostname);
 
   // 1. Check Deny list (Deny always takes precedence over Allow)
   if (policy.denyHosts.length > 0) {

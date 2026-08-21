@@ -242,3 +242,67 @@ test("Operator Policy — createNetworkOperatorPolicy boundary validations", () 
     /Invalid maxTimeoutMs/
   );
 });
+
+test("Operator Policy — Unicode / IDN normalization & invalid IDNA fail-fast", () => {
+  // Unicode/IDN hostnames are canonicalized to Punycode ASCII
+  assert.equal(normalizeHostPattern("münchen.de"), "xn--mnchen-3ya.de");
+  assert.equal(normalizeHostPattern("MÜNCHEN.DE"), "xn--mnchen-3ya.de");
+  assert.equal(normalizeHostPattern("*.münchen.de"), "*.xn--mnchen-3ya.de");
+  assert.equal(normalizeHostPattern("xn--mnchen-3ya.de"), "xn--mnchen-3ya.de");
+
+  // Matching works seamlessly across IDN / Punycode representations
+  const idnPolicy = createNetworkOperatorPolicy({
+    allowHosts: ["münchen.de", "*.københavn.dk"],
+  });
+  assert.deepEqual(evaluateHostnamePolicy("xn--mnchen-3ya.de", idnPolicy), { allowed: true });
+  assert.deepEqual(evaluateHostnamePolicy("münchen.de", idnPolicy), { allowed: true });
+  assert.deepEqual(evaluateHostnamePolicy("turist.københavn.dk", idnPolicy), { allowed: true });
+  assert.deepEqual(evaluateHostnamePolicy("turist.xn--kbenhavn-54a.dk", idnPolicy), {
+    allowed: true,
+  });
+  assert.deepEqual(evaluateHostnamePolicy("københavn.dk", idnPolicy), {
+    allowed: false,
+    reason: "host_not_allowed",
+  });
+});
+
+test("Operator Policy — Raw Public IP literals vs Allowlist", () => {
+  // Case A: Empty allowlist permits public IP literal (subject to SSRF blocklist)
+  const emptyPolicy = createNetworkOperatorPolicy({});
+  assert.deepEqual(evaluateHostnamePolicy("93.184.216.34", emptyPolicy), { allowed: true });
+
+  // Case B: Non-empty allowlist containing only DNS hostnames blocks raw IP literals
+  const hostAllowPolicy = createNetworkOperatorPolicy({
+    allowHosts: ["example.com", "*.example.com"],
+  });
+  assert.deepEqual(evaluateHostnamePolicy("93.184.216.34", hostAllowPolicy), {
+    allowed: false,
+    reason: "host_not_allowed",
+  });
+});
+
+test("Operator Policy — Runtime Immutability and Object.freeze", () => {
+  const policy = createNetworkOperatorPolicy({
+    allowHosts: ["example.com"],
+    denyHosts: ["bad.example.com"],
+    httpsOnly: true,
+    maxResponseBytes: 1_000_000,
+    maxTimeoutMs: 5000,
+  });
+
+  assert.ok(Object.isFrozen(policy), "policy object must be frozen");
+  assert.ok(Object.isFrozen(policy.allowHosts), "allowHosts array must be frozen");
+  assert.ok(Object.isFrozen(policy.denyHosts), "denyHosts array must be frozen");
+
+  // Attempting runtime mutation throws in strict mode
+  assert.throws(() => {
+    (policy as any).httpsOnly = false;
+  }, TypeError);
+  assert.throws(() => {
+    (policy.allowHosts as any).push("attacker.com");
+  }, TypeError);
+  assert.throws(() => {
+    (policy.denyHosts as any).pop();
+  }, TypeError);
+});
+
