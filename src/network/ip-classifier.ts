@@ -44,14 +44,20 @@ ipv4BlockList.addSubnet("240.0.0.0", 4, "ipv4");
 ipv6BlockList.addAddress("::", "ipv6");
 // ::1/128           - Loopback (RFC 4291)
 ipv6BlockList.addAddress("::1", "ipv6");
+// ::/96             - IPv4-Compatible IPv6 Deprecated (RFC 4291)
+ipv6BlockList.addSubnet("::", 96, "ipv6");
 // 64:ff9b:1::/48    - Local-Use IPv4/IPv6 Translation (RFC 8215)
 ipv6BlockList.addSubnet("64:ff9b:1::", 48, "ipv6");
 // 100::/64          - Discard-Only (RFC 6666)
 ipv6BlockList.addSubnet("100::", 64, "ipv6");
+// 2001::/32         - Teredo Tunneling (RFC 4380) - Entire Prefix Blocked
+ipv6BlockList.addSubnet("2001::", 32, "ipv6");
 // 2001:20::/28      - ORCHIDv2 (RFC 7343)
 ipv6BlockList.addSubnet("2001:20::", 28, "ipv6");
 // 2001:db8::/32     - Documentation (RFC 3849)
 ipv6BlockList.addSubnet("2001:db8::", 32, "ipv6");
+// 2002::/16         - 6to4 Tunneling (RFC 3056) - Entire Prefix Blocked
+ipv6BlockList.addSubnet("2002::", 16, "ipv6");
 // fc00::/7          - Unique-Local Unicast (RFC 4193)
 ipv6BlockList.addSubnet("fc00::", 7, "ipv6");
 // fe80::/10         - Link-Local Unicast (RFC 4291)

@@ -82,6 +82,84 @@ test("fetchUrlService — Bounded streaming and truncation at maxBytes", async (
   }
 });
 
+test("fetchUrlService — Single large chunk memory bound proof (no memory overflow)", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    // Send a single large chunk of 64 KiB
+    res.end(Buffer.alloc(65536, "Z"));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    const result = await fetchUrlService({
+      url: `http://public.example.com:${port}/large-chunk`,
+      maxBytes: 128, // Hard maxBytes limit: 128 bytes
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.bytesRead, 128);
+    assert.equal(result.body?.length, 128);
+    assert.equal(result.truncated, true);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Content-Length safety (large declared Content-Length and chunked transfer)", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/huge-cl") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Length": "1048576", // 1 MiB declared length
+      });
+      res.end("A".repeat(200));
+    } else if (req.url === "/chunked") {
+      res.writeHead(200, {
+        "Content-Type": "text/plain",
+        // No Content-Length -> Transfer-Encoding: chunked
+      });
+      res.write("Chunk 1; ");
+      res.write("Chunk 2");
+      res.end();
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    const hugeClResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/huge-cl`,
+      maxBytes: 100, // Limit to 100 bytes
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(hugeClResult.status, 200);
+    assert.equal(hugeClResult.bytesRead, 100);
+    assert.equal(hugeClResult.truncated, true);
+    assert.equal(hugeClResult.contentLength, 1048576);
+
+    const chunkedResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/chunked`,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(chunkedResult.status, 200);
+    assert.equal(chunkedResult.body, "Chunk 1; Chunk 2");
+    assert.equal(chunkedResult.contentLength, 16);
+    assert.equal(chunkedResult.truncated, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("fetchUrlService — Manual redirect handling up to 5 hops", async () => {
   const server = http.createServer((req, res) => {
     if (req.url === "/hop1") {
@@ -169,23 +247,81 @@ test("fetchUrlService — Redirect to private destination is blocked before seco
   }
 });
 
-test("fetchUrlService — Rejects unsupported Content-Encoding (gzip/br)", async () => {
-  const server = http.createServer((_req, res) => {
-    res.writeHead(200, {
-      "Content-Type": "text/plain",
-      "Content-Encoding": "gzip",
-    });
-    res.end(Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
+test("fetchUrlService — Content-Encoding verification (absent, identity, gzip, br, deflate)", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/absent") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("uncompressed text");
+    } else if (req.url === "/identity") {
+      res.writeHead(200, { "Content-Type": "text/plain", "Content-Encoding": "identity" });
+      res.end("identity text");
+    } else if (req.url === "/gzip") {
+      res.writeHead(200, { "Content-Type": "text/plain", "Content-Encoding": "gzip" });
+      res.end(Buffer.from([0x1f, 0x8b, 0x08, 0x00]));
+    } else if (req.url === "/br") {
+      res.writeHead(200, { "Content-Type": "text/plain", "Content-Encoding": "br" });
+      res.end(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]));
+    } else if (req.url === "/deflate") {
+      res.writeHead(200, { "Content-Type": "text/plain", "Content-Encoding": "deflate" });
+      res.end(Buffer.from([0x78, 0x9c, 0x03, 0x00]));
+    }
   });
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as any).port;
 
   try {
+    // 1. Absent -> 200 OK
+    const absentRes = await fetchUrlService({
+      url: `http://public.example.com:${port}/absent`,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(absentRes.status, 200);
+    assert.equal(absentRes.body, "uncompressed text");
+
+    // 2. Identity -> 200 OK
+    const identityRes = await fetchUrlService({
+      url: `http://public.example.com:${port}/identity`,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(identityRes.status, 200);
+    assert.equal(identityRes.body, "identity text");
+
+    // 3. Gzip -> rejected
     await assert.rejects(
       async () => {
         await fetchUrlService({
-          url: `http://public.example.com:${port}/`,
+          url: `http://public.example.com:${port}/gzip`,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "unsupported_content_encoding"
+    );
+
+    // 4. Brotli -> rejected
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/br`,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "unsupported_content_encoding"
+    );
+
+    // 5. Deflate -> rejected
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/deflate`,
           customResolver: localLoopbackResolver,
           customAllowedPorts: [port],
           allowLoopbackForTesting: true,
@@ -366,7 +502,6 @@ test("fetchUrlService — Handles 204 No Content empty responses safely", async 
 
 test("fetchUrlService — AbortSignal cancellation immediately stops request", async () => {
   const server = http.createServer((_req, res) => {
-    // Deliberately stall response
     setTimeout(() => {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("delayed");
@@ -397,14 +532,63 @@ test("fetchUrlService — AbortSignal cancellation immediately stops request", a
   }
 });
 
+test("fetchUrlService — DNS late-callback is ignored after abort/timeout", async () => {
+  let socketAttempted = false;
+  const server = http.createServer((_req, res) => {
+    socketAttempted = true;
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("should never be called");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  // Delayed resolver that takes 100ms
+  const delayedResolver: SafeDnsResolver = {
+    async resolve(_hostname: string, signal?: AbortSignal) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (signal?.aborted) {
+        throw new Error("DNS lookup cancelled");
+      }
+      return [{ address: "127.0.0.1", family: 4 }];
+    },
+  };
+
+  const controller = new AbortController();
+  // Abort early at 15ms while DNS is still resolving
+  setTimeout(() => controller.abort(), 15);
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/`,
+          signal: controller.signal,
+          customResolver: delayedResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError
+    );
+
+    // Wait past the 100ms resolver delay to ensure late completion never triggered socket connection
+    await new Promise((r) => setTimeout(r, 120));
+    assert.equal(socketAttempted, false, "Late DNS callback must never start socket connection");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("fetchUrlService — Environment proxy variables do not hijack connection", async () => {
-  // Set proxy env variables
   const origHttpProxy = process.env.HTTP_PROXY;
   const origHttpsProxy = process.env.HTTPS_PROXY;
+  const origAllProxy = process.env.ALL_PROXY;
   const origNodeEnvProxy = process.env.NODE_USE_ENV_PROXY;
 
   process.env.HTTP_PROXY = "http://127.0.0.1:9999";
   process.env.HTTPS_PROXY = "http://127.0.0.1:9999";
+  process.env.ALL_PROXY = "http://127.0.0.1:9999";
   process.env.NODE_USE_ENV_PROXY = "1";
 
   const server = http.createServer((_req, res) => {
@@ -429,11 +613,12 @@ test("fetchUrlService — Environment proxy variables do not hijack connection",
     await new Promise<void>((resolve) => server.close(() => resolve()));
     process.env.HTTP_PROXY = origHttpProxy;
     process.env.HTTPS_PROXY = origHttpsProxy;
+    process.env.ALL_PROXY = origAllProxy;
     process.env.NODE_USE_ENV_PROXY = origNodeEnvProxy;
   }
 });
 
-test("fetchUrlService — Rejects 101 Protocol Upgrade attempts", async () => {
+test("fetchUrlService — Rejects 101 Protocol Upgrade attempts and destroys socket", async () => {
   const server = http.createServer((_req, res) => {
     res.writeHead(101, {
       Connection: "Upgrade",

@@ -276,6 +276,7 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
 
     let clientRequest: http.ClientRequest;
     let completed = false;
+    let isTruncated = false;
 
     const cleanup = () => {
       if (!completed) {
@@ -418,24 +419,10 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
         let bytesRead = 0;
         let truncated = false;
 
-        res.on("data", (chunk: Buffer) => {
-          if (bytesRead >= maxBytes) {
-            return;
-          }
-
-          const remaining = maxBytes - bytesRead;
-          if (chunk.length > remaining) {
-            chunks.push(chunk.subarray(0, remaining));
-            bytesRead += remaining;
-            truncated = true;
-            res.destroy(); // Stop receiving data immediately
-          } else {
-            chunks.push(chunk);
-            bytesRead += chunk.length;
-          }
-        });
-
-        res.on("end", () => {
+        const finishResponse = () => {
+          if (completed) return;
+          completed = true;
+          if (truncated) isTruncated = true;
           signal.removeEventListener("abort", abortHandler);
           cleanup();
 
@@ -476,9 +463,41 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
             bytesRead,
             truncated,
           });
+        };
+
+        res.on("data", (chunk: Buffer) => {
+          if (bytesRead >= maxBytes || completed) {
+            return;
+          }
+
+          const remaining = maxBytes - bytesRead;
+          if (chunk.length > remaining) {
+            chunks.push(chunk.subarray(0, remaining));
+            bytesRead += remaining;
+            truncated = true;
+            isTruncated = true;
+            res.destroy(); // Stop receiving data immediately
+            finishResponse();
+          } else {
+            chunks.push(chunk);
+            bytesRead += chunk.length;
+          }
+        });
+
+        res.on("end", () => {
+          finishResponse();
+        });
+
+        res.on("close", () => {
+          if (!completed && truncated) {
+            finishResponse();
+          }
         });
 
         res.on("error", (err: any) => {
+          if (truncated || completed) {
+            return;
+          }
           signal.removeEventListener("abort", abortHandler);
           cleanup();
           reject(new NetworkSecurityError("network_error", "Error reading response stream.", err.message));
@@ -499,6 +518,10 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
       });
 
       clientRequest.on("error", (err: any) => {
+        if (completed || isTruncated) {
+          return;
+        }
+
         signal.removeEventListener("abort", abortHandler);
         cleanup();
 

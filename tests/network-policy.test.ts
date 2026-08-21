@@ -75,6 +75,12 @@ test("Network IP Classifier — Blocks all IPv6 private, loopback, and special-u
     "::",
     "[::]",
     "0:0:0:0:0:0:0:0",
+    // IPv4-Compatible IPv6 Deprecated (::/96)
+    "::127.0.0.1",
+    "::10.0.0.1",
+    "::7f00:1",
+    "::a00:1",
+    "::192.168.1.1",
     // Unique-Local RFC 4193 (fc00::/7)
     "fc00::1",
     "fc00:1234::1",
@@ -91,8 +97,17 @@ test("Network IP Classifier — Blocks all IPv6 private, loopback, and special-u
     "2001:db8::1",
     // Discard-only (100::/64)
     "100::1",
+    "100::ffff:ffff:ffff",
     // Local-Use translation (64:ff9b:1::/48)
     "64:ff9b:1::1",
+    "64:ff9b:1:abcd::1",
+    // Teredo prefix (2001::/32) - entire range blocked in v0.2.0
+    "2001:0000::1",
+    "2001::1234",
+    // 6to4 prefix (2002::/16) - entire range blocked in v0.2.0
+    "2002::1",
+    "2002:7f00:0001::",
+    "2002:5db8:d822::",
   ];
 
   for (const ip of blockedIpv6) {
@@ -109,6 +124,7 @@ test("Network IP Classifier — Blocks IPv4-Mapped and Transition IPv6 encapsula
     "::ffff:10.0.0.1",
     "::ffff:169.254.169.254",
     "::ffff:192.168.1.1",
+    "::ffff:100.64.0.1",
     "::ffff:172.16.0.1",
     "::ffff:7f00:1", // 127.0.0.1 in hex
     "::ffff:a00:1",  // 10.0.0.1 in hex
@@ -121,6 +137,7 @@ test("Network IP Classifier — Blocks IPv4-Mapped and Transition IPv6 encapsula
     "64:ff9b::10.0.0.1",
     "64:ff9b::169.254.169.254",
     "64:ff9b::192.168.1.1",
+    "64:ff9b::100.64.0.1",
     // 6to4 RFC 3056 (2002::/16)
     "2002:7f00:0001::", // 127.0.0.1
     "2002:0a00:0001::", // 10.0.0.1
@@ -142,14 +159,13 @@ test("Network IP Classifier — Allows valid public IPv4 and IPv6 addresses", ()
     "1.1.1.1",
     "151.101.1.140",
     "104.244.42.1",
-    // Standard public IPv6 (Global Unicast 2000::/3)
+    // Standard public IPv6 (Global Unicast 2000::/3, excluding 2001::/32 and 2002::/16)
     "2606:2800:220:1:248:1893:25c8:1946",
     "2001:4860:4860::8888",
     "2607:f8b0:4005:805::200e",
-    // Transition with public IPv4 (93.184.216.34 = 0x5db8d822)
+    // Transition with public IPv4 (93.184.216.34)
     "::ffff:93.184.216.34",
     "64:ff9b::93.184.216.34",
-    "2002:5db8:d822::",
   ];
 
   for (const ip of allowedPublic) {
