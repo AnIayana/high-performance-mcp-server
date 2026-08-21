@@ -2024,8 +2024,8 @@ test("fetchUrlService — Conditional Cache: Cache-Control directives (no-store,
   );
 
   try {
-    // 1. Cache-Control: no-store -> uncacheable
-    ccHeader = "no-store";
+    // 1. Cache-Control: No-Store (case-insensitive) -> uncacheable
+    ccHeader = "No-Store";
     const resNoStore = await fetchUrlService({
       url: `https://public.example.com:${port}/cc-test`,
       networkCache: cache,
@@ -2036,8 +2036,8 @@ test("fetchUrlService — Conditional Cache: Cache-Control directives (no-store,
     assert.equal(resNoStore.cacheStatus, "uncacheable");
     assert.equal(cache.size, 0);
 
-    // 2. Cache-Control: private -> uncacheable
-    ccHeader = "private, max-age=3600";
+    // 2. Cache-Control: PRIVATE (case-insensitive) -> uncacheable
+    ccHeader = "PRIVATE, max-age=3600";
     const resPrivate = await fetchUrlService({
       url: `https://public.example.com:${port}/cc-test`,
       networkCache: cache,
@@ -2048,7 +2048,34 @@ test("fetchUrlService — Conditional Cache: Cache-Control directives (no-store,
     assert.equal(resPrivate.cacheStatus, "uncacheable");
     assert.equal(cache.size, 0);
 
-    // 3. Cache-Control: max-age=3600 (without no-store/private) -> stored, but second request STILL revalidates with origin
+    // 3. Cache-Control: No-Cache (case-insensitive) -> stored, but requires origin 304 revalidation
+    ccHeader = "No-Cache";
+    const resNoCache = await fetchUrlService({
+      url: `https://public.example.com:${port}/cc-test`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(resNoCache.cacheStatus, "stored");
+    assert.equal(cache.size, 1);
+
+    // Second fetch with No-Cache entry MUST conditionally revalidate with origin
+    const prevCountNoCache = requestCount;
+    const resNoCacheReval = await fetchUrlService({
+      url: `https://public.example.com:${port}/cc-test`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(resNoCacheReval.cacheStatus, "revalidated");
+    assert.equal(resNoCacheReval.revalidationStatus, 304);
+    assert.equal(requestCount, prevCountNoCache + 1);
+    assert.equal(lastIfNoneMatch, '"cc-tag"');
+    cache.clear();
+
+    // 4. Cache-Control: max-age=3600 (without no-store/private) -> stored, but second request STILL revalidates with origin
     ccHeader = "public, max-age=3600";
     const resStored = await fetchUrlService({
       url: `https://public.example.com:${port}/cc-test`,
