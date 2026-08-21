@@ -214,8 +214,28 @@ The `fetch_url` tool performs a strictly bounded, read-only HTTP/HTTPS GET reque
 - **Zero IP Disclosure**: Error messages returned to clients never leak internal IP addresses, local socket details, or DNS topologies.
 - **Bounded Resource Usage**: Streaming response reader buffers only up to requested `maxBytes` (default 1 MiB, hard maximum 5 MiB). If payload exceeds limit, `truncated: true` is returned and the stream is immediately destroyed.
 - **Strict Textual Decoding**: Decodes exclusively textual MIME types (`text/*`, `application/json`, `application/xml`, `application/javascript`, `application/xhtml+xml`, `application/yaml`) with fatal UTF-8 decoding (`new TextDecoder("utf-8", { fatal: true })`). Binary bodies and explicit non-UTF-8 encodings are rejected.
-- **No Credentials / State**: Does not accept caller-defined headers, cookies, or authentication tokens.
-- **Untrusted Remote Content Boundary**: Remote fetched content is untrusted external data. LLMs are explicitly instructed not to treat remote web content as server instructions.
+### Operator-Configurable Egress Policy
+
+Server operators can enforce additional deployment-level egress policies to restrict outbound network capabilities:
+
+1. **Allowed Hostname Patterns (`--network-allow-host`, `MCP_NETWORK_ALLOW_HOSTS_JSON`)**:
+   - Limits network egress exclusively to specified exact hostnames (`example.com`) or subdomain wildcards (`*.githubusercontent.com`).
+   - Repeatable on CLI or specified as a JSON string array in environment variables.
+   - If configured, any unlisted host is rejected with `host_not_allowed` ("Destination hostname is not allowed by server network policy.").
+
+2. **Denied Hostname Patterns (`--network-deny-host`, `MCP_NETWORK_DENY_HOSTS_JSON`)**:
+   - Explicitly blocks specified hostnames or subdomain wildcards.
+   - **Deny takes strict precedence over allow**: If a destination matches both allow and deny patterns, it is rejected with `host_denied` ("Destination hostname is denied by server network policy.").
+
+3. **HTTPS-Only Mode (`--network-https-only`, `MCP_NETWORK_HTTPS_ONLY`)**:
+   - Enforces encrypted HTTPS for all outbound requests. Any `http://` initial target or redirect destination is rejected with `https_required` ("HTTPS is required by server network policy.").
+
+4. **Operator Resource Caps**:
+   - **`--network-max-response-bytes`** (`MCP_NETWORK_MAX_RESPONSE_BYTES`): Clamps the maximum response size (1 to 5,242,880 bytes).
+   - **`--network-max-timeout-ms`** (`MCP_NETWORK_MAX_TIMEOUT_MS`): Clamps the maximum request timeout (1,000 to 30,000 ms).
+
+> [!IMPORTANT]
+> **Operator Restrictions Are Subtractive Only**: Operator configuration can never weaken or override built-in SSRF protections. Private IPs, loopback, link-local, carrier-grade NAT, and cloud metadata destinations remain strictly blocked even if listed in `--network-allow-host`.
 
 ---
 
@@ -226,13 +246,18 @@ Usage:
   high-performance-mcp-server [options]
 
 Options:
-  --transport=<stdio|http>   Transport protocol to run (default: stdio)
-  --port=<number>            HTTP server port (default: 3000, only for http transport)
-  --profile=<profile>        Security tool profile (default: safe)
-  --root=<path>              Allowlisted read-only workspace root (repeatable, max 16)
-  --list-tools               Display available tools for the active profile and exit
-  --help, -h                 Show this help message and exit
-  --version, -v              Show version and exit
+  --transport=<stdio|http>       Transport protocol to run (default: stdio)
+  --port=<number>                HTTP server port (default: 3000, only for http transport)
+  --profile=<profile>            Security tool profile (default: safe)
+  --root=<path>                  Allowlisted read-only workspace root (repeatable, max 16)
+  --network-allow-host=<pattern> Allowlisted public hostname or *.domain pattern (repeatable, operator restriction)
+  --network-deny-host=<pattern>  Denylisted hostname or *.domain pattern (repeatable, operator restriction)
+  --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)
+  --network-max-response-bytes=<n> Operator hard cap for response size in bytes (1-5242880, default: 5242880)
+  --network-max-timeout-ms=<n>   Operator hard cap for request timeout in ms (1000-30000, default: 30000)
+  --list-tools                   Display available tools for the active profile and exit
+  --help, -h                     Show this help message and exit
+  --version, -v                  Show version and exit
 ```
 
 ### Examples
@@ -240,6 +265,14 @@ Options:
 ```bash
 # Start default safe server on stdio
 high-performance-mcp-server
+
+# Start with network profile and strict operator egress restrictions
+high-performance-mcp-server --profile=network \
+  --network-allow-host=example.com \
+  --network-allow-host="*.githubusercontent.com" \
+  --network-https-only \
+  --network-max-response-bytes=262144 \
+  --network-max-timeout-ms=5000
 
 # List tools available under the workspace profile
 high-performance-mcp-server --profile=workspace --list-tools
@@ -263,9 +296,14 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `diagnostics`, `benchmark`, `admin`, `all`) |
+| `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
+| `MCP_NETWORK_ALLOW_HOSTS_JSON` | `string` | *(none)* | JSON array of allowed public host patterns (e.g. `["example.com","*.githubusercontent.com"]`) |
+| `MCP_NETWORK_DENY_HOSTS_JSON` | `string` | *(none)* | JSON array of denied host patterns (e.g. `["ads.example.com"]`) |
+| `MCP_NETWORK_HTTPS_ONLY` | `boolean` | `false` | Enforce HTTPS-only mode for all network requests (`true`/`1`/`false`/`0`) |
+| `MCP_NETWORK_MAX_RESPONSE_BYTES`| `number` | `5242880` | Operator response byte cap override (1 to 5242880) |
+| `MCP_NETWORK_MAX_TIMEOUT_MS` | `number` | `30000` | Operator request timeout cap in ms override (1000 to 30000) |
 | `MCP_WORKER_COUNT` | `number` | `4` | Number of worker threads spawned in the pool (1 to 16) |
 | `MCP_CACHE_MAX_ENTRIES` | `number` | `256` | Maximum entries in the LRU cache (1 to 10000) |
 | `MCP_CACHE_TTL_MS` | `number` | `300000` | LRU cache entry Time-to-Live in milliseconds (5 minutes) |

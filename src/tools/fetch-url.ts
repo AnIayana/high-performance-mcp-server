@@ -24,7 +24,7 @@ export const toolMeta: ToolMetadata = {
  */
 export default function registerFetchUrlTool(
   server: McpServer,
-  _context?: ServerContext
+  context?: ServerContext
 ): void {
   server.registerTool(
     toolMeta.name,
@@ -78,6 +78,7 @@ export default function registerFetchUrlTool(
         maxBytes: args.maxBytes,
         timeoutMs: args.timeoutMs,
         signal,
+        operatorPolicy: context?.networkPolicy,
       });
 
       return {

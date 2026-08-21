@@ -4,6 +4,7 @@ import { DEFAULT_TOOL_PROFILE, type ToolProfile } from "./config/tool-profile.js
 import type { WorkspaceConfig } from "./config/workspace.js";
 import type { ServerContext } from "./core/server-context.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./generated/build-meta.js";
+import type { NetworkOperatorPolicy } from "./network/operator-policy.js";
 import { registerPrompts } from "./prompts/index.js";
 import { registerResources } from "./resources/index.js";
 import { registerTools } from "./tools/index.js";
@@ -11,6 +12,7 @@ import { registerTools } from "./tools/index.js";
 export interface CreateServerOptions {
   profile?: ToolProfile;
   workspaceConfig?: WorkspaceConfig;
+  networkPolicy?: NetworkOperatorPolicy;
 }
 
 /**
@@ -21,6 +23,7 @@ export interface CreateServerOptions {
 export function createServer(options?: CreateServerOptions): McpServer {
   const profile = options?.profile ?? DEFAULT_TOOL_PROFILE;
   const workspace = options?.workspaceConfig;
+  const networkPolicy = options?.networkPolicy;
 
   const server = new McpServer(
     {
@@ -35,6 +38,7 @@ export function createServer(options?: CreateServerOptions): McpServer {
   const context: ServerContext = {
     profile,
     workspace,
+    networkPolicy,
   };
 
   registerTools(server, context);

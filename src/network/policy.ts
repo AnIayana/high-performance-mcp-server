@@ -1,15 +1,18 @@
 import net from "node:net";
 import { classifyIpAddress } from "./ip-classifier.js";
+import { evaluateHostnamePolicy, type NetworkOperatorPolicy } from "./operator-policy.js";
 import { NetworkSecurityError } from "./types.js";
 
 export const MAX_URL_LENGTH = 2048;
 export const DEFAULT_ALLOWED_PORTS: readonly number[] = [80, 443, 8080, 8443] as const;
 
-export const DEFAULT_FETCH_MAX_BYTES = 1_048_576; // 1 MiB
-export const MAX_FETCH_MAX_BYTES = 5_242_880;     // 5 MiB
+export {
+  DEFAULT_FETCH_MAX_BYTES,
+  MAX_FETCH_MAX_BYTES,
+  DEFAULT_FETCH_TIMEOUT_MS,
+  MAX_FETCH_TIMEOUT_MS,
+} from "./operator-policy.js";
 
-export const DEFAULT_FETCH_TIMEOUT_MS = 10_000;    // 10 seconds
-export const MAX_FETCH_TIMEOUT_MS = 30_000;        // 30 seconds
 export const MAX_REDIRECTS = 5;
 export const MAX_HEADER_SIZE = 16_384;             // 16 KiB
 
@@ -19,16 +22,19 @@ const BLOCKED_HOSTNAMES = new Set([
 ]);
 
 /**
- * Validates that a raw input URL satisfies basic syntax, scheme, credentials, and port policies.
+ * Validates that a raw input URL satisfies basic syntax, scheme, credentials, port, and operator policies.
  *
  * @param rawUrl Input URL string
  * @param allowedPorts Optional allowed ports list (defaults to [80, 443, 8080, 8443])
+ * @param allowLoopbackForTesting Testing bypass for localhost
+ * @param operatorPolicy Optional operator-configured egress policy
  * @returns Parsed and validated URL object
  */
 export function validateAndParseUrl(
   rawUrl: string,
   allowedPorts: readonly number[] = DEFAULT_ALLOWED_PORTS,
-  allowLoopbackForTesting = false
+  allowLoopbackForTesting = false,
+  operatorPolicy?: NetworkOperatorPolicy
 ): URL {
   if (typeof rawUrl !== "string" || rawUrl.trim().length === 0) {
     throw new NetworkSecurityError("invalid_url", "URL must be a non-empty string.");
@@ -56,7 +62,15 @@ export function validateAndParseUrl(
     );
   }
 
-  // 2. Reject credentials in URL (user:pass@host)
+  // 2. HTTPS-only enforcement if configured by operator
+  if (operatorPolicy?.httpsOnly && parsed.protocol !== "https:") {
+    throw new NetworkSecurityError(
+      "https_required",
+      "HTTPS is required by server network policy."
+    );
+  }
+
+  // 3. Reject credentials in URL (user:pass@host)
   if (parsed.username || parsed.password) {
     throw new NetworkSecurityError(
       "credentials_not_allowed",
@@ -64,7 +78,7 @@ export function validateAndParseUrl(
     );
   }
 
-  // 3. Validate hostname
+  // 4. Validate hostname
   const rawHostname = parsed.hostname;
   if (!rawHostname || rawHostname.trim().length === 0) {
     throw new NetworkSecurityError("invalid_url", "URL hostname is required.");
@@ -84,7 +98,24 @@ export function validateAndParseUrl(
     );
   }
 
-  // 4. Validate port
+  // 5. Operator Hostname Policy (Deny takes precedence, then Allow)
+  if (operatorPolicy) {
+    const hostEval = evaluateHostnamePolicy(normalizedHostname, operatorPolicy);
+    if (!hostEval.allowed) {
+      if (hostEval.reason === "host_denied") {
+        throw new NetworkSecurityError(
+          "host_denied",
+          "Destination hostname is denied by server network policy."
+        );
+      }
+      throw new NetworkSecurityError(
+        "host_not_allowed",
+        "Destination hostname is not allowed by server network policy."
+      );
+    }
+  }
+
+  // 6. Validate port
   let port = parsed.port ? parseInt(parsed.port, 10) : parsed.protocol === "https:" ? 443 : 80;
   if (isNaN(port) || port <= 0 || port > 65535) {
     throw new NetworkSecurityError("port_not_allowed", `Invalid port number specified.`);
@@ -97,7 +128,7 @@ export function validateAndParseUrl(
     );
   }
 
-  // 5. If hostname is already an IP literal (or normalized IPv4 by WHATWG URL), classify it directly
+  // 7. If hostname is already an IP literal (or normalized IPv4 by WHATWG URL), classify it directly
   const cleanIp = normalizedHostname.replace(/^\[|\]$/g, "");
   if (net.isIP(cleanIp) !== 0) {
     const classification = classifyIpAddress(cleanIp, allowLoopbackForTesting);

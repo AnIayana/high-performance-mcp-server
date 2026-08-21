@@ -123,3 +123,14 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Untrusted External Data Boundary**: Fetched remote content is external untrusted data. Connected models are instructed not to treat remote web content as authoritative server instructions.
 - **Policy Scope & Inherent Limitations**: IP subnet blocklists prevent reaching non-public, loopback, link-local, cloud metadata, and private network address spaces. However, globally routable public IP addresses are considered network-eligible even if the underlying web application is organizationally restricted or requires network perimeter firewalls.
 
+### 11. Operator-Configurable Network Egress Policy
+- **Restrictive Layering**: Operator policies are strictly additive/restrictive (`built-in SSRF policy AND operator policy`). Configuration cannot override or bypass built-in private IP, loopback, link-local, or cloud metadata protections.
+- **Hostname Pattern Normalization**: Allowed and denied hostnames are strictly normalized (WHATWG URL parsing, lowercase, trailing dot removal). IP literals (`127.0.0.1`, `::1`), URLs, paths, query parameters, ports, credentials, and forbidden local domains (`localhost`, `*.local`, `*.internal`) are rejected at configuration time.
+- **Subdomain Wildcards**: Wildcard patterns must use the `*.domain.tld` prefix format, matching subdomains (e.g. `api.example.com`, `a.b.example.com`) while strictly excluding the apex domain (`example.com`).
+- **Deny Precedence**: If a destination matches both allow and deny lists, the deny rule strictly takes precedence (`host_denied`).
+- **HTTPS-Only Enforcement**: When enabled, HTTP requests and redirects to HTTP are rejected (`https_required`).
+- **Configurable Resource Caps**: Operators can lower the maximum response size (`maxResponseBytes`, 1 to 5,242,880) and timeout (`maxTimeoutMs`, 1,000 to 30,000). Caller requests are clamped to `min(caller, operator, hard_cap)`.
+- **Hop-by-Hop Re-evaluation**: All operator egress rules (allowlist, denylist, HTTPS-only) are re-evaluated independently on every redirect destination before establishing subsequent connections.
+- **Configuration Privacy**: Sanitized client error messages (`host_not_allowed`, `host_denied`, `https_required`) never leak configured host allowlists or denylists to clients.
+
+

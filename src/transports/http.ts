@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/node";
 import { DEFAULT_TOOL_PROFILE, type ToolProfile } from "../config/tool-profile.js";
 import type { WorkspaceConfig } from "../config/workspace.js";
+import type { NetworkOperatorPolicy } from "../network/operator-policy.js";
 import { createServer } from "../server.js";
 import { closeWorkerPool } from "../workers/pool.js";
 
@@ -24,9 +25,10 @@ export interface HttpTransportServerInstance {
 export async function createHttpTransportServer(
   port: number,
   profile: ToolProfile = DEFAULT_TOOL_PROFILE,
-  workspaceConfig?: WorkspaceConfig
+  workspaceConfig?: WorkspaceConfig,
+  networkPolicy?: NetworkOperatorPolicy
 ): Promise<HttpTransportServerInstance> {
-  const handler = createMcpHandler(() => createServer({ profile, workspaceConfig }));
+  const handler = createMcpHandler(() => createServer({ profile, workspaceConfig, networkPolicy }));
   const nodeHandler = toNodeHandler(handler);
 
   const validateHost = localhostHostValidation();
@@ -90,9 +92,10 @@ export async function createHttpTransportServer(
 export async function startHttpTransport(
   port: number,
   profile: ToolProfile = DEFAULT_TOOL_PROFILE,
-  workspaceConfig?: WorkspaceConfig
+  workspaceConfig?: WorkspaceConfig,
+  networkPolicy?: NetworkOperatorPolicy
 ): Promise<void> {
-  const instance = await createHttpTransportServer(port, profile, workspaceConfig);
+  const instance = await createHttpTransportServer(port, profile, workspaceConfig, networkPolicy);
   console.error(`[MCP HTTP] Listening on http://127.0.0.1:${instance.port}/mcp (profile: ${profile})`);
 
   let isShuttingDown = false;

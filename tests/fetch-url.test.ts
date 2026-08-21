@@ -735,3 +735,309 @@ test("fetchUrlService — Error privacy: blocked destination failures never disc
     }
   }
 });
+
+test("fetchUrlService — Operator allowlist permits allowed host and blocks unlisted hosts", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("allowed content");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const policy = {
+    allowHosts: ["allowed.example.com", "*.allowed-sub.org"],
+    denyHosts: [],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  try {
+    // 1. Matching exact allowlist
+    const allowedRes = await fetchUrlService({
+      url: `http://allowed.example.com:${port}/`,
+      operatorPolicy: policy,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(allowedRes.status, 200);
+    assert.equal(allowedRes.body, "allowed content");
+
+    // 2. Matching wildcard allowlist
+    const subRes = await fetchUrlService({
+      url: `http://api.allowed-sub.org:${port}/`,
+      operatorPolicy: policy,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(subRes.status, 200);
+    assert.equal(subRes.body, "allowed content");
+
+    // 3. Unlisted host rejected with host_not_allowed
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://unlisted.example.com:${port}/`,
+          operatorPolicy: policy,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "host_not_allowed" &&
+        err.message === "Destination hostname is not allowed by server network policy."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Operator denylist blocks denied hosts with host_denied", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("data");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const policy = {
+    allowHosts: [],
+    denyHosts: ["denied.example.com", "*.ads.net"],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  try {
+    // 1. Non-denied host allowed
+    const okRes = await fetchUrlService({
+      url: `http://public.example.com:${port}/`,
+      operatorPolicy: policy,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(okRes.status, 200);
+
+    // 2. Exact denied host blocked with host_denied
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://denied.example.com:${port}/`,
+          operatorPolicy: policy,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "host_denied" &&
+        err.message === "Destination hostname is denied by server network policy."
+    );
+
+    // 3. Wildcard denied host blocked with host_denied
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://banner.ads.net:${port}/`,
+          operatorPolicy: policy,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "host_denied" &&
+        err.message === "Destination hostname is denied by server network policy."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Operator denylist takes precedence over allowlist", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("data");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  // Host matches allow (*.example.com) BUT also matches deny (blocked.example.com)
+  const policy = {
+    allowHosts: ["*.example.com"],
+    denyHosts: ["blocked.example.com"],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://blocked.example.com:${port}/`,
+          operatorPolicy: policy,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "host_denied" &&
+        err.message === "Destination hostname is denied by server network policy."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Redirect to denied host is rejected at redirect hop", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/start") {
+      res.writeHead(302, { Location: `http://tracker.adnetwork.com:${port}/dest` });
+      res.end();
+    } else {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("landing");
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const policy = {
+    allowHosts: ["allowed.com", "*.adnetwork.com"],
+    denyHosts: ["tracker.adnetwork.com"],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://allowed.com:${port}/start`,
+          operatorPolicy: policy,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "host_denied" &&
+        err.message === "Destination hostname is denied by server network policy."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Operator allowlist CANNOT bypass built-in SSRF protections", async () => {
+  // Even if operator configured allowHosts = ["safe.example.com"]
+  // If safe.example.com resolves to private/loopback/cloud IP, it MUST be blocked
+  const privateResolver: SafeDnsResolver = {
+    async resolve(_hostname: string) {
+      return [{ address: "10.0.0.1", family: 4 }];
+    },
+  };
+
+  const policy = {
+    allowHosts: ["safe.example.com"],
+    denyHosts: [],
+    httpsOnly: false,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://safe.example.com/api",
+        operatorPolicy: policy,
+        customResolver: privateResolver,
+        customAllowedPorts: [80],
+        allowLoopbackForTesting: false,
+      });
+    },
+    (err: any) =>
+      err instanceof NetworkSecurityError &&
+      err.code === "blocked_destination" &&
+      err.message === "Destination is not allowed by network security policy."
+  );
+});
+
+test("fetchUrlService — Operator HTTPS-only mode rejects HTTP initial and redirect destinations", async () => {
+  const policy = {
+    allowHosts: [],
+    denyHosts: [],
+    httpsOnly: true,
+    maxResponseBytes: 5_242_880,
+    maxTimeoutMs: 30_000,
+  };
+
+  // Initial HTTP rejected
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://example.com/data",
+        operatorPolicy: policy,
+      });
+    },
+    (err: any) =>
+      err instanceof NetworkSecurityError &&
+      err.code === "https_required" &&
+      err.message === "HTTPS is required by server network policy."
+  );
+});
+
+test("fetchUrlService — Operator maxResponseBytes clamps response truncation", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    // 500 bytes payload
+    res.end("x".repeat(500));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const policy = {
+    allowHosts: [],
+    denyHosts: [],
+    httpsOnly: false,
+    maxResponseBytes: 100, // Operator cap of 100 bytes
+    maxTimeoutMs: 30_000,
+  };
+
+  try {
+    // Caller requests 1000 bytes, but operator caps at 100 bytes
+    const result = await fetchUrlService({
+      url: `http://public.example.com:${port}/`,
+      maxBytes: 1000,
+      operatorPolicy: policy,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.truncated, true);
+    assert.equal(result.bytesRead, 100);
+    assert.equal(result.body?.length, 100);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
