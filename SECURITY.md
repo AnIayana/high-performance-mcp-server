@@ -80,3 +80,18 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Release Environment Protection**: Irreversible publication jobs run within the `release` GitHub Environment, allowing repository maintainers to enforce manual approval gates and required reviewer checks before publication proceeds.
 - **Immutable Version & Tag Enforcement**: Real releases require exact SemVer matching across `package.json`, `server.json`, and an immutable Git tag (`vX.Y.Z`) pointing directly to the checked-out commit. Dry-run validation tests the quality gate without requiring Git tags.
 
+### 10. Network & SSRF Security (`fetch_url`)
+- **Explicit Profile Opt-In**: Outbound network fetching is disabled by default. It is exposed exclusively when `--profile=network` (or `--profile=all`) is active.
+- **Strict Read-Only Semantics**: Only standard HTTP/HTTPS GET requests are performed. No mutation verbs (`POST`, `PUT`, `DELETE`, `PATCH`), arbitrary custom headers, caller cookies, or authorization tokens are accepted.
+- **SSRF Subnet & Cloud Metadata Blocking**: All target IP addresses (both initial target and every redirect hop) are validated against `net.BlockList` tables:
+  - **IPv4**: Loopback (`127.0.0.0/8`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`), carrier-grade NAT (`100.64.0.0/10`), cloud metadata (`169.254.169.254`), multicast (`224.0.0.0/4`), broadcast (`255.255.255.255/32`), and reserved ranges (`0.0.0.0/8`, `240.0.0.0/4`).
+  - **IPv6**: Loopback (`::1/128`), unspecified (`::/128`), unique-local (`fc00::/7`), link-local (`fe80::/10`), multicast (`ff00::/8`), and documentation (`2001:db8::/32`).
+  - **Transition & IPv4-Mapped IPv6**: Embedded IPv4 addresses in `::ffff:0:0/96`, `64:ff9b::/96`, `2002::/16`, and `2001::/32` are decomposed and classified against the full IPv4 policy.
+- **Authoritative Socket Lookup & DNS Rebinding Defenses**: Socket connection establishment receives a custom `lookup` function tied directly to the security resolver. TCP connections connect strictly to verified public IPs. If a hostname resolves to multiple IP addresses and *any* address is blocked, the entire hostname is rejected (All-or-Nothing rule).
+- **Port Allowlist**: Outbound requests are restricted to standard public web ports: `80`, `443`, `8080`, and `8443`.
+- **Redirect Controls**: Maximum 5 redirects. Every hop is re-validated against the full URL and IP policy. HTTPS-to-HTTP downgrade redirects are strictly rejected (`redirect_downgrade_not_allowed`).
+- **Resource Bounds & Truncation**: Default body size limit is 1 MiB (`DEFAULT_MAX_FETCH_BYTES`), with a hard upper bound of 5 MiB (`HARD_MAX_FETCH_BYTES`). Default timeout is 10 seconds (`DEFAULT_TIMEOUT_MS`), with a 30-second hard cap (`MAX_TIMEOUT_MS`). Streaming responses exceeding `maxBytes` are truncated with `truncated: true` and the underlying socket is immediately destroyed.
+- **Textual Content Decoding**: Responses must have textual Content-Types and are decoded with fatal UTF-8 rules (`new TextDecoder("utf-8", { fatal: true })`). Binary payloads and non-UTF-8 explicit charsets are rejected. Non-identity compression (`gzip`, `br`, `deflate`) is rejected.
+- **Client Error Sanitization**: Client-facing errors never leak internal IP addresses, local socket details, or DNS topologies.
+- **Untrusted External Data Boundary**: Fetched remote content is external untrusted data. Connected models are instructed not to treat remote web content as authoritative server instructions.
+

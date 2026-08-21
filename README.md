@@ -91,10 +91,11 @@ To protect host machines and prevent unintended resource consumption or metadata
 | :--- | :--- | :--- | :--- | :--- |
 | **`safe`** *(Default)* | `safe` | `echo`, `ping` | *(none)* | Zero host inspection, zero filesystem access, zero mutation. Safe for public exposure. |
 | **`workspace`** | `safe`, `workspace` | `echo`, `ping`, `workspace_roots`, `list_directory`, `file_info`, `read_text_file`, `search_files`, `search_text` | `explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol` | Read-only file and directory inspection strictly limited to allowlisted `--root` directories. |
+| **`network`** | `safe`, `network` | `echo`, `ping`, `fetch_url` | *(none)* | SSRF-hardened, read-only HTTP/HTTPS web fetching for public resources. |
 | **`diagnostics`** | `safe`, `diagnostics` | `echo`, `ping`, `cache_stats`, `server_metrics`, `system_stats`, `worker_pool_stats` | *(none)* | Process and system observability for monitoring health and event-loop lag. |
 | **`benchmark`** | `safe`, `benchmark` | `echo`, `ping`, `cached_prime_count`, `heavy_compute_main`, `heavy_compute_worker` | *(none)* | CPU-intensive prime calculation benchmarks and worker pool tests. |
 | **`admin`** | `safe`, `diagnostics`, `admin` | `echo`, `ping`, `cache_stats`, `server_metrics`, `system_stats`, `worker_pool_stats`, `reset_cache`, `reset_metrics` | *(none)* | Observability with administrative runtime state mutation (purging cache, resetting metrics). |
-| **`all`** | `safe`, `workspace`, `diagnostics`, `benchmark`, `admin` | All 17 registered tools | All 4 workspace prompts | Complete tool and prompt catalog. |
+| **`all`** | `safe`, `workspace`, `network`, `diagnostics`, `benchmark`, `admin` | All 18 registered tools | All 4 workspace prompts | Complete tool and prompt catalog. |
 
 ---
 
@@ -177,6 +178,44 @@ The `workspace` profile provides bounded, read-only search tools:
    - Automatically skips binary files (NUL bytes) and files larger than 1 MiB (`MAX_SEARCH_FILE_BYTES`).
    - Limits: Hard defaults (`maxResults: 100` [max 500], `maxFiles: 5000` [max 50000], `timeoutMs: 10000` [max 30000]).
    - Fully cancellable via client `AbortSignal`.
+
+---
+
+## Network Access & `fetch_url`
+
+Network access is **disabled by default**. To enable SSRF-hardened read-only web fetching, run with `--profile=network` (or `--profile=all`):
+
+```bash
+# Start server with opt-in network profile
+npx high-performance-mcp-server --profile=network
+```
+
+### `fetch_url` Tool Details
+
+The `fetch_url` tool performs a strictly bounded, read-only HTTP/HTTPS GET request to public web resources.
+
+```json
+{
+  "name": "fetch_url",
+  "arguments": {
+    "url": "https://raw.githubusercontent.com/modelcontextprotocol/specification/main/LICENSE",
+    "maxBytes": 1048576,
+    "timeoutMs": 10000
+  }
+}
+```
+
+### Security Guarantees & Constraints
+
+- **Multi-Layered SSRF Defense**: All resolved IP addresses are evaluated against standard IPv4/IPv6 private and special-use subnets (`net.BlockList`). Loopback (`127.0.0.0/8`, `::1`), private RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`, `fe80::/10`), carrier-grade NAT (`100.64.0.0/10`), cloud metadata (`169.254.169.254`, `metadata.google.internal`), unique-local IPv6 (`fc00::/7`), multicast, and IPv4-mapped IPv6 (`::ffff:x.x.x.x`) destinations are strictly blocked.
+- **Authoritative Socket Lookup (DNS Rebinding Prevention)**: Connection sockets use a dedicated, security-aware lookup hook ensuring TCP sockets connect *only* to verified public IP addresses, eliminating time-of-check to time-of-use (TOCTOU) DNS rebinding.
+- **Allowed Port Allowlist**: Strictly limited to standard public web ports: `80`, `443`, `8080`, and `8443`.
+- **Manual Redirect Re-validation**: Up to 5 redirects (`301`, `302`, `303`, `307`, `308`) are manually followed. Every intermediate target is re-validated against full URL, port, and IP security policies. HTTPS-to-HTTP downgrade redirects are rejected.
+- **Zero IP Disclosure**: Error messages returned to clients never leak internal IP addresses, local socket details, or DNS topologies.
+- **Bounded Resource Usage**: Streaming response reader buffers only up to requested `maxBytes` (default 1 MiB, hard maximum 5 MiB). If payload exceeds limit, `truncated: true` is returned and the stream is immediately destroyed.
+- **Strict Textual Decoding**: Decodes exclusively textual MIME types (`text/*`, `application/json`, `application/xml`, `application/javascript`, `application/xhtml+xml`, `application/yaml`) with fatal UTF-8 decoding (`new TextDecoder("utf-8", { fatal: true })`). Binary bodies and explicit non-UTF-8 encodings are rejected.
+- **No Credentials / State**: Does not accept caller-defined headers, cookies, or authentication tokens.
+- **Untrusted Remote Content Boundary**: Remote fetched content is untrusted external data. LLMs are explicitly instructed not to treat remote web content as server instructions.
 
 ---
 

@@ -108,7 +108,7 @@ test("Modern MCP Protocol (2026-07-28) — Safe Profile Connection & Identity", 
     const serverVersion = client.getServerVersion();
     assert.equal(serverVersion?.name, PACKAGE_NAME);
     assert.equal(serverVersion?.version, PACKAGE_VERSION);
-    assert.equal(serverVersion?.version, "0.1.0");
+    assert.equal(serverVersion?.version, "0.2.0");
 
     // Server Instructions verification (Safe profile)
     const instructions = client.getInstructions();
@@ -397,3 +397,37 @@ test("Legacy Compatibility — 2025-era Client Handshake, Tools & Workspace Prom
     fixture.cleanup();
   }
 });
+
+test("Modern MCP Integration — Network profile tools list", async () => {
+  const serverInstance = await createHttpTransportServer(0, "network");
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+  );
+
+  const client = new Client(
+    {
+      name: "modern-network-client",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  try {
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    const toolNames = tools.map((t) => t.name).sort();
+
+    assert.deepEqual(toolNames, ["echo", "fetch_url", "ping"]);
+    assert.equal(tools.length, 3);
+
+    const fetchUrlTool = tools.find((t) => t.name === "fetch_url");
+    assert.ok(fetchUrlTool);
+    assert.ok(fetchUrlTool.description.includes("SSRF-hardened"));
+  } finally {
+    await client.close();
+    await serverInstance.close();
+  }
+});
+

@@ -24,7 +24,7 @@ test("Release Metadata Invariants — package.json and server.json synchronizati
     serverJson.version,
     "package.json version must match server.json version"
   );
-  assert.equal(packageJson.version, "0.1.0");
+  assert.equal(packageJson.version, "0.2.0");
 
   // 2. Package identifier matches
   assert.ok(

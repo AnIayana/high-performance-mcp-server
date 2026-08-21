@@ -172,7 +172,7 @@ async function runPackageSmokeTest(): Promise<void> {
     );
     assert.equal(
       installedPackageJson.version,
-      "0.1.0",
+      expectedVersion,
       "Installed package.json version must match"
     );
     console.log(`[Smoke Test] Installed package mcpName metadata validated: ${installedPackageJson.mcpName}`);

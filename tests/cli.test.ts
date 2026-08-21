@@ -44,6 +44,7 @@ test("CLI Parser — transport and port arguments", () => {
 
 test("CLI Parser — profile arguments", () => {
   assert.equal(parseCliArgs(["--profile=workspace", "--root=./a"], {}).profile, "workspace");
+  assert.equal(parseCliArgs(["--profile=network"], {}).profile, "network");
   assert.equal(parseCliArgs(["--profile=diagnostics"], {}).profile, "diagnostics");
   assert.equal(parseCliArgs(["--profile=benchmark"], {}).profile, "benchmark");
   assert.equal(parseCliArgs(["--profile=admin"], {}).profile, "admin");

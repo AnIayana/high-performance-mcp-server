@@ -3,7 +3,7 @@
   "name": "io.github.eminyilmz/high-performance-mcp-server",
   "title": "High Performance MCP Server",
   "description": "High-performance, modular MCP v2 server with safe profiles, worker pool, caching, and stdio.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/eminyilmz/high-performance-mcp-server",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "npm",
       "identifier": "high-performance-mcp-server",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "transport": {
         "type": "stdio"
       }
