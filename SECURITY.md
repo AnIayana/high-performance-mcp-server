@@ -133,4 +133,30 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Hop-by-Hop Re-evaluation**: All operator egress rules (allowlist, denylist, HTTPS-only) are re-evaluated independently on every redirect destination before establishing subsequent connections.
 - **Configuration Privacy**: Sanitized client error messages (`host_not_allowed`, `host_denied`, `https_required`) never leak configured host allowlists or denylists to clients.
 
+### 12. Conditional HTTP Response Cache Security
+- **Opt-In Capability**: Disabled by default. Enabled exclusively when explicitly configured by the server operator via `--network-cache` or `MCP_NETWORK_CACHE_ENABLED=true`.
+- **Conservative v1 Eligibility Rules**: Only responses meeting all conservative criteria are eligible for caching:
+  1. Scheme is strictly HTTPS (plain HTTP responses are never cached).
+  2. Direct request only (responses resulting from redirects are uncacheable).
+  3. Status code is strictly 200 OK.
+  4. Response body was received in full without truncation (`truncated === false`).
+  5. Content-Type is an accepted textual MIME type.
+  6. Content-Encoding is uncompressed (`identity` or absent).
+  7. Response contains a valid, sanitized `ETag` or `Last-Modified` header.
+  8. `Cache-Control` does not contain `no-store` or `private`.
+  9. `Set-Cookie` header is absent.
+  10. Request URL contains no query string parameters or fragment identifiers.
+  11. `Vary` header is not `*`.
+- **Mandatory Live Revalidation Invariant**: The configured TTL is a retention TTL for cache eviction, NOT an offline freshness window. Every reuse must send conditional headers (`If-None-Match` or `If-Modified-Since`) to the origin over the secure transport.
+- **Zero Offline Stale Fallback**: Stale cached responses are never served on network errors, timeouts, aborts, or destination security failures. The origin failure is always returned directly to the caller.
+- **Continuous SSRF & Egress Policy Enforcement**: Revalidation connections pass through the exact same socket-level security controls (custom DNS lookup hook, private IP blocklists, DNS rebinding defenses, TLS verification, and operator allow/deny policy).
+- **Privacy-Preserving SHA-256 Keys**: Cache keys are 256-bit opaque SHA-256 hashes generated over canonical HTTPS identities. Plaintext URLs and authorization tokens are never stored in cache keys or cache records.
+- **Validator Header Sanitization**: `ETag` and `Last-Modified` values are sanitized to reject any control characters (CR, LF, NUL, ASCII 0x00–0x1F, 0x7F) and capped at safe byte lengths (1,024 bytes for ETag, 256 bytes for Last-Modified).
+- **Bounded Resource Limits**: In-memory cache storage is bounded by LRU eviction with operator-configurable byte caps (1 KiB to 64 MiB, default 16 MiB), entry counts (1 to 512, default 128), and retention TTLs (1,000 to 3,600,000 ms, default 300,000 ms).
+- **Caller MaxBytes Protection**: If a cached response body length exceeds the caller's requested `maxBytes`, the cached entry is bypassed for that request and a fresh bounded fetch is executed.
+- **Safe UTF-8 Truncation**: When response streaming is truncated mid-multibyte sequence, trailing incomplete bytes are cleanly discarded before decoding, preventing decode errors without compromising fatal UTF-8 enforcement.
+- **Runtime Context Isolation**: Cache instances are owned exclusively per `ServerContext` instance. No module-global shared cache exists between server instances.
+
+
+
 

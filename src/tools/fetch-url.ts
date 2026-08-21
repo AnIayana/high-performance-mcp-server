@@ -69,6 +69,15 @@ export default function registerFetchUrlTool(
         bytesRead: z.number(),
         truncated: z.boolean(),
         redirectCount: z.number(),
+        cacheStatus: z.enum([
+          "disabled",
+          "miss",
+          "stored",
+          "revalidated",
+          "updated",
+          "uncacheable",
+        ]),
+        revalidationStatus: z.number().optional(),
       }),
     },
     withToolMetrics(toolMeta.name, async (args, extra?: any) => {
@@ -79,6 +88,7 @@ export default function registerFetchUrlTool(
         timeoutMs: args.timeoutMs,
         signal,
         operatorPolicy: context?.networkPolicy,
+        networkCache: context?.networkCache,
       });
 
       return {
