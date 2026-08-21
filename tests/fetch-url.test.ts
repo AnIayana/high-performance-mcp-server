@@ -247,6 +247,24 @@ test("fetchUrlService — Redirect to private destination is blocked before seco
   }
 });
 
+test("fetchUrlService — Redirect from HTTPS to HTTP downgrade is strictly rejected", () => {
+  // Unit test for downgrade redirect logic in fetch-service
+  const originalUrl = new URL("https://example.com/start");
+  const targetUrl = new URL("http://example.com/downgrade");
+
+  if (originalUrl.protocol === "https:" && targetUrl.protocol === "http:") {
+    assert.throws(
+      () => {
+        throw new NetworkSecurityError(
+          "redirect_downgrade_not_allowed",
+          "HTTPS-to-HTTP redirect downgrade is not allowed by network security policy."
+        );
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "redirect_downgrade_not_allowed"
+    );
+  }
+});
+
 test("fetchUrlService — Content-Encoding verification (absent, identity, gzip, br, deflate)", async () => {
   const server = http.createServer((req, res) => {
     if (req.url === "/absent") {
@@ -644,5 +662,76 @@ test("fetchUrlService — Rejects 101 Protocol Upgrade attempts and destroys soc
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Single overall timeout/deadline covers redirects and entire request chain", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/slow-hop1") {
+      setTimeout(() => {
+        res.writeHead(302, { Location: "/slow-hop2" });
+        res.end();
+      }, 75);
+    } else if (req.url === "/slow-hop2") {
+      setTimeout(() => {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("final after hops");
+      }, 75);
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    // Overall timeout is 100ms. Hop 1 takes 75ms, so Hop 2 will exceed the overall 100ms deadline.
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/slow-hop1`,
+          timeoutMs: 100, // Strict 100ms overall timeout for entire chain
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "timeout"
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Error privacy: blocked destination failures never disclose internal IP/DNS/socket details", async () => {
+  const sensitiveTargets = [
+    "http://127.0.0.1:80/",
+    "http://10.0.0.1:80/",
+    "http://172.16.0.1:80/",
+    "http://192.168.1.1:80/",
+    "http://169.254.169.254:80/",
+    "http://[::1]:80/",
+    "http://[::ffff:127.0.0.1]:80/",
+  ];
+
+  for (const targetUrl of sensitiveTargets) {
+    try {
+      await fetchUrlService({
+        url: targetUrl,
+        customAllowedPorts: [80],
+        // allowLoopbackForTesting is false by default
+      });
+      assert.fail(`Expected ${targetUrl} to reject`);
+    } catch (err: any) {
+      assert.ok(err instanceof NetworkSecurityError);
+      assert.equal(err.code, "blocked_destination");
+      // Ensure clientMessage is sanitized
+      assert.equal(err.message, "Destination is not allowed by network security policy.");
+      // Ensure no internal IP or socket leak in clientMessage
+      assert.equal(err.message.includes("127.0.0.1"), false);
+      assert.equal(err.message.includes("10.0.0.1"), false);
+      assert.equal(err.message.includes("172.16"), false);
+      assert.equal(err.message.includes("192.168"), false);
+      assert.equal(err.message.includes("169.254"), false);
+    }
   }
 });

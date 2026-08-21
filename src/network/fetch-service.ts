@@ -87,8 +87,9 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
   const resolver: SafeDnsResolver = options.customResolver ?? new DefaultDnsResolver();
 
   // Validate timeout
+  const minTimeout = options.allowLoopbackForTesting ? 10 : 1000;
   let timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
-  if (typeof timeoutMs !== "number" || isNaN(timeoutMs) || timeoutMs < 1000) {
+  if (typeof timeoutMs !== "number" || isNaN(timeoutMs) || timeoutMs < minTimeout) {
     timeoutMs = DEFAULT_FETCH_TIMEOUT_MS;
   } else if (timeoutMs > MAX_FETCH_TIMEOUT_MS) {
     timeoutMs = MAX_FETCH_TIMEOUT_MS;
