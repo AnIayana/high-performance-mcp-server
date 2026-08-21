@@ -319,3 +319,85 @@ test("CLI Parser — invalid network environment variables fail fast", () => {
   assert.ok(invalidTimeout.error?.includes("Invalid MCP_NETWORK_MAX_TIMEOUT_MS"));
 });
 
+test("CLI Parser — network conditional cache CLI flags and environment variables", () => {
+  // 1. Defaults when disabled
+  const configDefault = parseCliArgs([], {});
+  assert.equal(configDefault.networkCachePolicy.enabled, false);
+  assert.equal(configDefault.networkCachePolicy.maxSizeBytes, 16 * 1024 * 1024);
+  assert.equal(configDefault.networkCachePolicy.maxEntries, 128);
+  assert.equal(configDefault.networkCachePolicy.retentionTtlMs, 300_000);
+
+  // 2. CLI flags enable and custom options
+  const configCli = parseCliArgs(
+    [
+      "--profile=network",
+      "--network-cache",
+      "--network-cache-max-size-bytes=8388608",
+      "--network-cache-max-entries=64",
+      "--network-cache-ttl-ms=60000",
+    ],
+    {}
+  );
+  assert.equal(configCli.error, undefined);
+  assert.equal(configCli.networkCachePolicy.enabled, true);
+  assert.equal(configCli.networkCachePolicy.maxSizeBytes, 8388608);
+  assert.equal(configCli.networkCachePolicy.maxEntries, 64);
+  assert.equal(configCli.networkCachePolicy.retentionTtlMs, 60000);
+
+  // 3. Environment variables
+  const configEnv = parseCliArgs([], {
+    MCP_NETWORK_CACHE_ENABLED: "true",
+    MCP_NETWORK_CACHE_MAX_SIZE_BYTES: "4194304",
+    MCP_NETWORK_CACHE_MAX_ENTRIES: "32",
+    MCP_NETWORK_CACHE_TTL_MS: "120000",
+  });
+  assert.equal(configEnv.error, undefined);
+  assert.equal(configEnv.networkCachePolicy.enabled, true);
+  assert.equal(configEnv.networkCachePolicy.maxSizeBytes, 4194304);
+  assert.equal(configEnv.networkCachePolicy.maxEntries, 32);
+  assert.equal(configEnv.networkCachePolicy.retentionTtlMs, 120000);
+
+  // 4. CLI overrides environment variables
+  const configOverride = parseCliArgs(
+    [
+      "--network-cache-max-size-bytes=2097152",
+      "--network-cache-max-entries=16",
+      "--network-cache-ttl-ms=30000",
+    ],
+    {
+      MCP_NETWORK_CACHE_ENABLED: "1",
+      MCP_NETWORK_CACHE_MAX_SIZE_BYTES: "33554432",
+      MCP_NETWORK_CACHE_MAX_ENTRIES: "256",
+      MCP_NETWORK_CACHE_TTL_MS: "600000",
+    }
+  );
+  assert.equal(configOverride.error, undefined);
+  assert.equal(configOverride.networkCachePolicy.enabled, true);
+  assert.equal(configOverride.networkCachePolicy.maxSizeBytes, 2097152);
+  assert.equal(configOverride.networkCachePolicy.maxEntries, 16);
+  assert.equal(configOverride.networkCachePolicy.retentionTtlMs, 30000);
+});
+
+test("CLI Parser — invalid network conditional cache options fail fast", () => {
+  // Invalid enabled env
+  const invalidEnabled = parseCliArgs([], { MCP_NETWORK_CACHE_ENABLED: "not-bool" });
+  assert.ok(invalidEnabled.error?.includes("Invalid MCP_NETWORK_CACHE_ENABLED"));
+
+  // Out of range max size bytes CLI
+  const lowSize = parseCliArgs(["--network-cache-max-size-bytes=500"], {});
+  assert.ok(lowSize.error?.includes("Invalid --network-cache-max-size-bytes"));
+
+  // Out of range max entries CLI
+  const highEntries = parseCliArgs(["--network-cache-max-entries=1000"], {});
+  assert.ok(highEntries.error?.includes("Invalid --network-cache-max-entries"));
+
+  // Out of range TTL CLI
+  const lowTtl = parseCliArgs(["--network-cache-ttl-ms=100"], {});
+  assert.ok(lowTtl.error?.includes("Invalid --network-cache-ttl-ms"));
+
+  // Duplicate singleton flag
+  const dupCache = parseCliArgs(["--network-cache", "--network-cache"], {});
+  assert.ok(dupCache.error?.includes('Duplicate option specified: "--network-cache"'));
+});
+
+

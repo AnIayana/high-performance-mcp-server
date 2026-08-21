@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import https from "node:https";
 import { test } from "node:test";
+import {
+  createNetworkCachePolicy,
+  HttpConditionalCache,
+} from "../src/network/conditional-cache.js";
 import { fetchUrlService } from "../src/network/fetch-service.js";
 import { NetworkSecurityError, type SafeDnsResolver } from "../src/network/types.js";
+import { TEST_TLS_CERT, TEST_TLS_KEY } from "./fixtures/test-cert.js";
 
 const localLoopbackResolver: SafeDnsResolver = {
   async resolve() {
@@ -1140,5 +1146,704 @@ test("fetchUrlService — Operator maxTimeoutMs bounds request deadline", async 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test("fetchUrlService — Conditional Cache: First 200 with ETag -> second conditional request gets 304 -> cached body returned", async () => {
+  let requestCount = 0;
+  let receivedIfNoneMatch: string | undefined;
+
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (req, res) => {
+      requestCount++;
+      receivedIfNoneMatch = req.headers["if-none-match"];
+
+      if (req.headers["if-none-match"] === '"etag-v1"') {
+        res.writeHead(304, {
+          etag: '"etag-v1"',
+          "content-type": "text/plain",
+        });
+        res.end();
+        return;
+      }
+
+      res.writeHead(200, {
+        "content-type": "text/plain",
+        etag: '"etag-v1"',
+      });
+      res.end("Cached resource body v1");
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    // First request: cache miss, stores entry
+    const res1 = await fetchUrlService({
+      url: `https://public.example.com:${port}/resource`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(res1.status, 200);
+    assert.equal(res1.body, "Cached resource body v1");
+    assert.equal(res1.cacheStatus, "stored");
+    assert.equal(requestCount, 1);
+    assert.equal(receivedIfNoneMatch, undefined);
+    assert.equal(cache.size, 1);
+
+    // Second request: sends If-None-Match, origin responds 304, returns cached body
+    const res2 = await fetchUrlService({
+      url: `https://public.example.com:${port}/resource`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(res2.status, 200);
+    assert.equal(res2.body, "Cached resource body v1");
+    assert.equal(res2.cacheStatus, "revalidated");
+    assert.equal(res2.revalidationStatus, 304);
+    assert.equal(requestCount, 2);
+    assert.equal(receivedIfNoneMatch, '"etag-v1"');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: Last-Modified only sends If-Modified-Since -> origin 304 -> cached body returned", async () => {
+  let receivedIfModifiedSince: string | undefined;
+
+  const lmHeader = "Wed, 21 Oct 2026 07:28:00 GMT";
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (req, res) => {
+      receivedIfModifiedSince = req.headers["if-modified-since"];
+
+      if (req.headers["if-modified-since"] === lmHeader) {
+        res.writeHead(304, {
+          "last-modified": lmHeader,
+          "content-type": "text/plain",
+        });
+        res.end();
+        return;
+      }
+
+      res.writeHead(200, {
+        "content-type": "text/plain",
+        "last-modified": lmHeader,
+      });
+      res.end("Last-Modified body v1");
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    // First request
+    const res1 = await fetchUrlService({
+      url: `https://public.example.com:${port}/resource-lm`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(res1.status, 200);
+    assert.equal(res1.body, "Last-Modified body v1");
+    assert.equal(res1.cacheStatus, "stored");
+
+    // Second request: sends If-Modified-Since
+    const res2 = await fetchUrlService({
+      url: `https://public.example.com:${port}/resource-lm`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(res2.status, 200);
+    assert.equal(res2.body, "Last-Modified body v1");
+    assert.equal(res2.cacheStatus, "revalidated");
+    assert.equal(res2.revalidationStatus, 304);
+    assert.equal(receivedIfModifiedSince, lmHeader);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: 200 changed representation updates entry", async () => {
+  let version = 1;
+
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      if (version === 1) {
+        res.writeHead(200, {
+          "content-type": "text/plain",
+          etag: '"etag-v1"',
+        });
+        res.end("Content v1");
+      } else {
+        res.writeHead(200, {
+          "content-type": "text/plain",
+          etag: '"etag-v2"',
+        });
+        res.end("Updated Content v2");
+      }
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    const res1 = await fetchUrlService({
+      url: `https://public.example.com:${port}/changing`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res1.body, "Content v1");
+    assert.equal(res1.cacheStatus, "stored");
+
+    // Origin updates resource
+    version = 2;
+
+    const res2 = await fetchUrlService({
+      url: `https://public.example.com:${port}/changing`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res2.body, "Updated Content v2");
+    assert.equal(res2.cacheStatus, "updated");
+    assert.equal(res2.status, 200);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: 404 response invalidates entry -> next request is a fresh miss", async () => {
+  let shouldReturn404 = false;
+
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      if (shouldReturn404) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("Not Found");
+      } else {
+        res.writeHead(200, {
+          "content-type": "text/plain",
+          etag: '"initial-tag"',
+        });
+        res.end("Initial item");
+      }
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    // 1. Store
+    const res1 = await fetchUrlService({
+      url: `https://public.example.com:${port}/item`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res1.cacheStatus, "stored");
+    assert.equal(cache.size, 1);
+
+    // 2. Resource deleted on origin -> returns 404 and invalidates cache entry
+    shouldReturn404 = true;
+    const res2 = await fetchUrlService({
+      url: `https://public.example.com:${port}/item`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res2.status, 404);
+    assert.equal(res2.cacheStatus, "uncacheable");
+    assert.equal(cache.size, 0); // Invalidated
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: DNS rebinds to private IP during revalidation -> blocked_destination (stale body NOT served)", async () => {
+  let dnsCallCount = 0;
+  const rebindingResolver: SafeDnsResolver = {
+    async resolve() {
+      dnsCallCount++;
+      if (dnsCallCount === 1) {
+        return [{ address: "93.184.216.34", family: 4 }]; // Public
+      }
+      return [{ address: "192.168.1.1", family: 4 }]; // Private rebind attempt
+    },
+  };
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  // Directly seed cache entry
+  const dummyUrl = new URL("https://rebinding.example/data");
+  const cacheKey = cache.enabled ? "dummy" : undefined;
+
+  // Simulate first request storing entry
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", etag: '"safe-tag"' });
+      res.end("Valid public response");
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    // 1. Initial request against local mock with localLoopbackResolver
+    await fetchUrlService({
+      url: `https://public.example.com:${port}/rebinding-test`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(cache.size, 1);
+
+    // 2. Second request now encounters private IP rebinding
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `https://public.example.com:${port}/rebinding-test`,
+          networkCache: cache,
+          customResolver: {
+            async resolve() {
+              return [{ address: "10.0.0.1", family: 4 }]; // Private IP
+            },
+          },
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: false,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "blocked_destination" &&
+        err.message === "Destination is not allowed by network security policy."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: MCP cancellation during revalidation -> request aborted (stale body NOT served)", async () => {
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", etag: '"tag-1"' });
+      res.end("Initial");
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    // Store
+    await fetchUrlService({
+      url: `https://public.example.com:${port}/cancel-test`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    // Abort controller
+    const controller = new AbortController();
+    controller.abort(); // Pre-aborted
+
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `https://public.example.com:${port}/cancel-test`,
+          networkCache: cache,
+          signal: controller.signal,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "timeout" &&
+        (err.message.includes("cancelled") || err.message.includes("timed out"))
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: Request timeout during revalidation -> timeout error (stale body NOT served)", async () => {
+  let isFirst = true;
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      if (isFirst) {
+        isFirst = false;
+        res.writeHead(200, { "content-type": "text/plain", etag: '"tag-timeout"' });
+        res.end("Initial body");
+      } else {
+        // Hang on revalidation to trigger timeout
+      }
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    await fetchUrlService({
+      url: `https://public.example.com:${port}/timeout-test`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `https://public.example.com:${port}/timeout-test`,
+          networkCache: cache,
+          timeoutMs: 50,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "timeout" &&
+        err.message === "Network request was cancelled or timed out."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: Operator hostname policy enforced during revalidation (denyHosts matches -> host_denied)", async () => {
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", etag: '"tag-policy"' });
+      res.end("Initial policy body");
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    await fetchUrlService({
+      url: `https://public.example.com:${port}/policy-test`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    // Revalidation with operator policy denying the host
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `https://public.example.com:${port}/policy-test`,
+          networkCache: cache,
+          operatorPolicy: {
+            allowHosts: [],
+            denyHosts: ["public.example.com"],
+            httpsOnly: false,
+            maxResponseBytes: 5242880,
+            maxTimeoutMs: 30000,
+          },
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        err.code === "host_denied" &&
+        err.message === "Destination hostname is denied by server network policy."
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: Redirect responses and Query URLs are uncacheable", async () => {
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (req, res) => {
+      if (req.url === "/redirect") {
+        res.writeHead(302, { location: "/target" });
+        res.end();
+      } else if (req.url === "/target") {
+        res.writeHead(200, { "content-type": "text/plain", etag: '"redir-tag"' });
+        res.end("Redirect Target");
+      } else if (req.url?.startsWith("/query")) {
+        res.writeHead(200, { "content-type": "text/plain", etag: '"query-tag"' });
+        res.end("Query Target");
+      }
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  try {
+    // 1. Redirect response
+    const redirRes = await fetchUrlService({
+      url: `https://public.example.com:${port}/redirect`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(redirRes.redirectCount, 1);
+    assert.equal(redirRes.cacheStatus, "uncacheable");
+
+    // 2. Query URL
+    const queryRes = await fetchUrlService({
+      url: `https://public.example.com:${port}/query?token=123`,
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(queryRes.cacheStatus, "uncacheable");
+    assert.equal(cache.size, 0); // Nothing stored
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: ServerContext isolation (Context A cache not visible to Context B)", async () => {
+  let hitCount = 0;
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (req, res) => {
+      hitCount++;
+      if (req.headers["if-none-match"] === '"isolation-tag"') {
+        res.writeHead(304, { etag: '"isolation-tag"', "content-type": "text/plain" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/plain", etag: '"isolation-tag"' });
+      res.end("Isolation Body");
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cacheA = new HttpConditionalCache(
+    createNetworkCachePolicy({ enabled: true, maxEntries: 10, maxSizeBytes: 1024 * 1024 })
+  );
+  const cacheB = new HttpConditionalCache(
+    createNetworkCachePolicy({ enabled: true, maxEntries: 10, maxSizeBytes: 1024 * 1024 })
+  );
+
+  try {
+    // Context A fetches and caches
+    const resA = await fetchUrlService({
+      url: `https://public.example.com:${port}/isolated`,
+      networkCache: cacheA,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(resA.cacheStatus, "stored");
+    assert.equal(cacheA.size, 1);
+    assert.equal(cacheB.size, 0); // Context B empty
+
+    // Context B fetches -> does not see Context A cache, performs fresh fetch
+    const resB = await fetchUrlService({
+      url: `https://public.example.com:${port}/isolated`,
+      networkCache: cacheB,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(resB.cacheStatus, "stored");
+    assert.equal(cacheB.size, 1);
+    assert.equal(hitCount, 2); // Origin had 2 separate 200 requests
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Conditional Cache: Cached entry larger than caller maxBytes skips cache reuse and bounds fresh fetch", async () => {
+  const bigContent = "A".repeat(500);
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain", etag: '"big-tag"' });
+      res.end(bigContent);
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({ enabled: true, maxEntries: 10, maxSizeBytes: 1024 * 1024 })
+  );
+
+  try {
+    // First request with large maxBytes -> stores 500-byte entry
+    const res1 = await fetchUrlService({
+      url: `https://public.example.com:${port}/large-item`,
+      networkCache: cache,
+      maxBytes: 1000,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res1.cacheStatus, "stored");
+    assert.equal(res1.bytesRead, 500);
+
+    // Second request specifies maxBytes: 50 -> cached body (500 bytes) exceeds caller cap
+    // -> skips conditional reuse and performs fresh bounded fetch (truncated at 50 bytes)
+    const res2 = await fetchUrlService({
+      url: `https://public.example.com:${port}/large-item`,
+      networkCache: cache,
+      maxBytes: 50,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res2.bytesRead, 50);
+    assert.equal(res2.truncated, true);
+    assert.equal(res2.body?.length, 50);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — Safe UTF-8 truncation boundary at incomplete multibyte sequences", async () => {
+  // 4-byte UTF-8 emoji: 🚀 (Rocket: F0 9F 99 80)
+  // Prefix with 4 ASCII bytes ('abcd') -> total 8 bytes.
+  // Truncating at maxBytes = 6 reads 'abcd' + 2 bytes of emoji (F0 9F) -> incomplete trailing multibyte.
+  const emojiRocket = Buffer.from("abcd🚀", "utf-8");
+  assert.equal(emojiRocket.length, 8);
+
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    res.end(emojiRocket);
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    const result = await fetchUrlService({
+      url: `http://public.example.com:${port}/utf8-boundary`,
+      maxBytes: 6, // Cuts off in middle of rocket emoji
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.bytesRead, 6);
+    assert.equal(result.truncated, true);
+    // Trailing incomplete 2 bytes of the emoji are cleanly dropped, leaving 'abcd' without throwing invalid_text_encoding
+    assert.equal(result.body, "abcd");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 
 

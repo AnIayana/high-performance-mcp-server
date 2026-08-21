@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Opt-in `network` tool profile exposing the SSRF-hardened `fetch_url` read-only HTTP/HTTPS GET tool.
 - Dedicated network security engine with mathematical IPv4/IPv6 classification (`net.BlockList`), custom socket `lookup` hooks preventing TOCTOU DNS rebinding, manual redirect re-validation (up to 5 redirects), and bounded stream decoding.
 - Operator-configurable network egress policy supporting allowed host patterns (`--network-allow-host`, `MCP_NETWORK_ALLOW_HOSTS_JSON`), denied host patterns (`--network-deny-host`, `MCP_NETWORK_DENY_HOSTS_JSON`), HTTPS-only mode (`--network-https-only`, `MCP_NETWORK_HTTPS_ONLY`), max response byte caps (`--network-max-response-bytes`, `MCP_NETWORK_MAX_RESPONSE_BYTES`), and max timeout caps (`--network-max-timeout-ms`, `MCP_NETWORK_MAX_TIMEOUT_MS`).
+- Optional in-memory conditional HTTP response cache for `fetch_url` (`--network-cache`, `MCP_NETWORK_CACHE_ENABLED`) utilizing `ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`, and HTTP 304 revalidation with bounded LRU storage and configurable limits (`--network-cache-max-size-bytes`, `--network-cache-max-entries`, `--network-cache-ttl-ms`).
 - Profile-aware server instruction guidance for safe network resource access, untrusted content boundaries, and operator egress restrictions.
 
 ### Security
@@ -22,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hostname pattern normalization and startup validation rejecting IP literals, URLs, ports, credentials, and forbidden hostnames.
 - Subdomain wildcard support (`*.domain.tld`) with strict apex exclusion and deny-list precedence over allow-list.
 - Explicit allowed port policy (`80`, `443`, `8080`, `8443`) and HTTPS-to-HTTP redirect downgrade prevention.
-- Bounded response streaming (1 MiB default, 5 MiB hard maximum), strict UTF-8 decoding (`fatal: true`), unsupported binary MIME rejection, and zero IP address disclosure in error messages.
+- Bounded response streaming (1 MiB default, 5 MiB hard maximum), strict UTF-8 decoding (`fatal: true`), safe trailing multibyte UTF-8 boundary trimming on truncation, unsupported binary MIME rejection, and zero IP address disclosure in error messages.
+- Conservative v1 conditional cache security: HTTPS-only caching, zero offline stale fallback, privacy-preserving SHA-256 cache keys without plaintext URLs or credentials, strict validator header sanitization, and runtime `ServerContext` isolation.
 
 ## [0.1.0] - 2026-08-20
 

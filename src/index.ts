@@ -51,9 +51,20 @@ async function main(): Promise<void> {
 
   // Start selected transport
   if (config.transport === "http") {
-    await startHttpTransport(config.port, config.profile, workspaceConfig, config.networkPolicy);
+    await startHttpTransport(
+      config.port,
+      config.profile,
+      workspaceConfig,
+      config.networkPolicy,
+      config.networkCachePolicy
+    );
   } else {
-    await startStdioTransport(config.profile, workspaceConfig, config.networkPolicy);
+    await startStdioTransport(
+      config.profile,
+      workspaceConfig,
+      config.networkPolicy,
+      config.networkCachePolicy
+    );
   }
 }
 

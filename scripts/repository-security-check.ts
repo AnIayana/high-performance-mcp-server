@@ -30,6 +30,7 @@ const SECRET_PATTERNS: readonly SecretPattern[] = [
 const EXEMPT_FROM_SCANNER_RULE_MATCHES: ReadonlySet<string> = new Set([
   "scripts/package-security-check.ts",
   "scripts/repository-security-check.ts",
+  "tests/fixtures/test-cert.ts",
 ]);
 
 async function runRepositorySecurityCheck(): Promise<void> {

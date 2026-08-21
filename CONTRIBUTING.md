@@ -77,6 +77,13 @@ When contributing to network services or outbound fetching:
 4. **Bounded Buffers & Truncation**: Enforce strict size bounds (`maxBytes` default 1 MiB, max 5 MiB) and immediate socket destruction upon truncation.
 5. **Strict UTF-8 Textual Decoding**: Decode text with fatal UTF-8 rules (`{ fatal: true }`). Reject binary Content-Types and non-identity compressions.
 6. **Zero IP Disclosures**: Never leak internal IP addresses or socket error specifics in client-facing error messages.
+7. **Conditional Cache Invariants**:
+   - Cache must be opt-in, disabled by default.
+   - Cache is strictly in-memory per `ServerContext` instance (no module-global shared state).
+   - Only HTTPS, direct, 200 OK responses with valid ETag/Last-Modified and no `no-store`/`private`/`Set-Cookie`/query strings are eligible.
+   - Every reuse must conditionally revalidate with origin over the secure transport; stale responses are NEVER served on errors/timeouts.
+   - Cache keys must be opaque SHA-256 hashes of canonical HTTPS URLs; plaintext URLs and credentials must never be stored.
+   - Header validators (ETag, Last-Modified) must be strictly sanitized against control characters (CR, LF, NUL) and length limits.
 
 ---
 

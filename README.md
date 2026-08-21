@@ -237,6 +237,19 @@ Server operators can enforce additional deployment-level egress policies to rest
 > [!IMPORTANT]
 > **Operator Restrictions Are Subtractive Only**: Operator configuration can never weaken or override built-in SSRF protections. Private IPs, loopback, link-local, carrier-grade NAT, and cloud metadata destinations remain strictly blocked even if listed in `--network-allow-host`.
 
+### Conditional HTTP Response Cache
+
+An optional, bounded, in-memory conditional cache can be enabled for `fetch_url` to reduce upstream bandwidth and latency for frequently accessed public HTTPS documents:
+
+- **Flag**: `--network-cache` (`MCP_NETWORK_CACHE_ENABLED=true`)
+- **Retention & Sizing Caps**:
+  - `--network-cache-max-size-bytes=<n>` (`MCP_NETWORK_CACHE_MAX_SIZE_BYTES`): Logical max cache payload size (1 KiB to 64 MiB, default 16 MiB).
+  - `--network-cache-max-entries=<n>` (`MCP_NETWORK_CACHE_MAX_ENTRIES`): Maximum cached entries (1 to 512, default 128).
+  - `--network-cache-ttl-ms=<n>` (`MCP_NETWORK_CACHE_TTL_MS`): Retention TTL in ms (1,000 to 3,600,000 ms, default 300,000 ms / 5 minutes).
+- **Mandatory Revalidation Invariant**: Cached entries are **never** served offline without revalidation. Every reuse sends conditional headers (`If-None-Match`, `If-Modified-Since`) to the origin over the full secure network transport (SSRF checks, DNS rebinding lookup, operator policy, and timeout deadline).
+- **Zero Stale Fallback**: If the origin is unreachable, times out, or changes to a private IP, the error is immediately returned; stale cached content is never served.
+- **Privacy-Preserving Keys**: Cache keys are opaque SHA-256 hashes of canonical HTTPS URLs. Plaintext URLs and authorization credentials are never stored.
+
 ---
 
 ## Command Line Interface (CLI)
@@ -255,6 +268,10 @@ Options:
   --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)
   --network-max-response-bytes=<n> Operator hard cap for response size in bytes (1-5242880, default: 5242880)
   --network-max-timeout-ms=<n>   Operator hard cap for request timeout in ms (1000-30000, default: 30000)
+  --network-cache                Enable conditional in-memory response cache for fetch_url (operator restriction)
+  --network-cache-max-size-bytes=<n> Logical max cache payload size in bytes (1024-67108864, default: 16777216)
+  --network-cache-max-entries=<n> Max cache entry count (1-512, default: 128)
+  --network-cache-ttl-ms=<n>     Max cache retention TTL in ms (1000-3600000, default: 300000)
   --list-tools                   Display available tools for the active profile and exit
   --help, -h                     Show this help message and exit
   --version, -v                  Show version and exit
@@ -266,13 +283,15 @@ Options:
 # Start default safe server on stdio
 high-performance-mcp-server
 
-# Start with network profile and strict operator egress restrictions
+# Start with network profile, operator egress restrictions, and conditional cache
 high-performance-mcp-server --profile=network \
   --network-allow-host=example.com \
   --network-allow-host="*.githubusercontent.com" \
   --network-https-only \
   --network-max-response-bytes=262144 \
-  --network-max-timeout-ms=5000
+  --network-max-timeout-ms=5000 \
+  --network-cache \
+  --network-cache-max-entries=256
 
 # List tools available under the workspace profile
 high-performance-mcp-server --profile=workspace --list-tools
@@ -304,9 +323,13 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 | `MCP_NETWORK_HTTPS_ONLY` | `boolean` | `false` | Enforce HTTPS-only mode for all network requests (`true`/`1`/`false`/`0`) |
 | `MCP_NETWORK_MAX_RESPONSE_BYTES`| `number` | `5242880` | Operator response byte cap override (1 to 5242880) |
 | `MCP_NETWORK_MAX_TIMEOUT_MS` | `number` | `30000` | Operator request timeout cap in ms override (1000 to 30000) |
+| `MCP_NETWORK_CACHE_ENABLED` | `boolean` | `false` | Enable conditional in-memory response cache (`true`/`1`/`false`/`0`) |
+| `MCP_NETWORK_CACHE_MAX_SIZE_BYTES`| `number` | `16777216`| Logical max cache payload size override in bytes (1024 to 67108864) |
+| `MCP_NETWORK_CACHE_MAX_ENTRIES` | `number` | `128` | Max cache entries override (1 to 512) |
+| `MCP_NETWORK_CACHE_TTL_MS` | `number` | `300000` | Max cache retention TTL override in ms (1000 to 3600000) |
 | `MCP_WORKER_COUNT` | `number` | `4` | Number of worker threads spawned in the pool (1 to 16) |
-| `MCP_CACHE_MAX_ENTRIES` | `number` | `256` | Maximum entries in the LRU cache (1 to 10000) |
-| `MCP_CACHE_TTL_MS` | `number` | `300000` | LRU cache entry Time-to-Live in milliseconds (5 minutes) |
+| `MCP_CACHE_MAX_ENTRIES` | `number` | `256` | Maximum entries in the LRU compute cache (1 to 10000) |
+| `MCP_CACHE_TTL_MS` | `number` | `300000` | LRU compute cache entry Time-to-Live in milliseconds (5 minutes) |
 
 ---
 

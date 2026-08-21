@@ -1,6 +1,12 @@
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
+import {
+  checkResponseCacheEligibility,
+  computeCacheKey,
+  type CachedHttpResponse,
+  type HttpConditionalCache,
+} from "./conditional-cache.js";
 import { DefaultDnsResolver, createSafeLookupFunction } from "./dns.js";
 import {
   calculateEffectiveMaxBytes,
@@ -17,6 +23,7 @@ import {
   validateAndParseUrl,
 } from "./policy.js";
 import {
+  type FetchUrlCacheStatus,
   type FetchUrlOptions,
   type FetchUrlResult,
   NetworkSecurityError,
@@ -75,6 +82,45 @@ function isMediaTypeAllowed(mediaType: string): boolean {
 }
 
 /**
+ * Safely strips any trailing incomplete UTF-8 multi-byte code point sequence
+ * if a stream was truncated mid-sequence at maxBytes.
+ */
+export function trimIncompleteTrailingUtf8(buf: Buffer): Buffer {
+  const len = buf.length;
+  if (len === 0) return buf;
+
+  for (let i = 1; i <= 4 && i <= len; i++) {
+    const byte = buf[len - i]!;
+    // Single-byte ASCII (0xxxxxxx)
+    if ((byte & 0x80) === 0) {
+      return buf;
+    }
+    // 2-byte lead (110xxxxx)
+    if ((byte & 0xe0) === 0xc0) {
+      if (i < 2) {
+        return buf.subarray(0, len - i);
+      }
+      return buf;
+    }
+    // 3-byte lead (1110xxxx)
+    if ((byte & 0xf0) === 0xe0) {
+      if (i < 3) {
+        return buf.subarray(0, len - i);
+      }
+      return buf;
+    }
+    // 4-byte lead (11110xxx)
+    if ((byte & 0xf8) === 0xf0) {
+      if (i < 4) {
+        return buf.subarray(0, len - i);
+      }
+      return buf;
+    }
+  }
+  return buf;
+}
+
+/**
  * Performs an SSRF-hardened, read-only HTTP/HTTPS GET request.
  *
  * Security Principles:
@@ -86,11 +132,13 @@ function isMediaTypeAllowed(mediaType: string): boolean {
  * 6. Strict UTF-8 text decoding (fatal: true) and binary NUL byte rejection.
  * 7. Zero IP disclosure in error messages.
  * 8. Operator-configured egress policy (allowlist, denylist, HTTPS-only, resource caps).
+ * 9. Optional conditional revalidation cache (ETag / Last-Modified) requiring full security pipeline on every reuse.
  */
 export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUrlResult> {
   const allowedPorts = options.customAllowedPorts ?? DEFAULT_ALLOWED_PORTS;
   const resolver: SafeDnsResolver = options.customResolver ?? new DefaultDnsResolver();
   const operatorPolicy = options.operatorPolicy;
+  const networkCache: HttpConditionalCache | undefined = options.networkCache;
   const allowLoopbackForTesting = options.allowLoopbackForTesting ?? false;
 
   // Calculate effective timeout bounded by operator cap and caller request
@@ -124,6 +172,8 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
   overallTimeoutController.signal.addEventListener("abort", onTimeoutAbort, { once: true });
 
   const requestedUrl = options.url;
+
+  // Initial URL & Operator Policy Validation (ALWAYS FIRST, before any cache consideration)
   let currentUrl = validateAndParseUrl(
     requestedUrl,
     allowedPorts,
@@ -131,6 +181,29 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
     operatorPolicy
   );
   let redirectCount = 0;
+
+  // Check if cache lookup is eligible for initial request
+  let cacheKey: string | null = null;
+  let cachedEntry: CachedHttpResponse | undefined;
+  let conditionalHeaders: Record<string, string> | undefined;
+
+  if (networkCache?.enabled && currentUrl.protocol === "https:" && (!currentUrl.search || currentUrl.search.length === 0)) {
+    cacheKey = computeCacheKey(currentUrl);
+    if (cacheKey) {
+      const candidate = networkCache.get(cacheKey);
+      // Ensure candidate body fits within caller's effective maxBytes
+      if (candidate) {
+        if (candidate.bodyBuffer.byteLength <= maxBytes) {
+          cachedEntry = candidate;
+          if (cachedEntry.etag) {
+            conditionalHeaders = { "If-None-Match": cachedEntry.etag };
+          } else if (cachedEntry.lastModified) {
+            conditionalHeaders = { "If-Modified-Since": cachedEntry.lastModified };
+          }
+        }
+      }
+    }
+  }
 
   try {
     while (true) {
@@ -141,6 +214,9 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
         throw new NetworkSecurityError("timeout", `Request timed out after ${timeoutMs}ms.`);
       }
 
+      // If this is a redirect hop, conditional headers are no longer sent (redirects are uncacheable in v1)
+      const currentConditionalHeaders = redirectCount === 0 ? conditionalHeaders : undefined;
+
       const responseOrRedirect = await executeSingleRequest({
         targetUrl: currentUrl,
         maxBytes,
@@ -148,6 +224,7 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
         resolver,
         signal: combinedController.signal,
         allowLoopbackForTesting,
+        conditionalHeaders: currentConditionalHeaders,
       });
 
       if (responseOrRedirect.isRedirect) {
@@ -189,7 +266,74 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
         continue;
       }
 
-      // Success / terminal response reached
+      // Terminal response reached
+      let cacheStatus: FetchUrlCacheStatus = networkCache?.enabled ? "miss" : "disabled";
+      let revalidationStatus: number | undefined;
+
+      // Handle 304 Not Modified
+      if (responseOrRedirect.status === 304 && cachedEntry && redirectCount === 0) {
+        // Confirm cached body passes current maxBytes
+        if (cachedEntry.bodyBuffer.byteLength <= maxBytes) {
+          const cachedBody = cachedEntry.bodyBuffer.toString("utf-8");
+          return {
+            requestedUrl,
+            finalUrl: currentUrl.href,
+            status: cachedEntry.status,
+            statusText: cachedEntry.statusText,
+            contentType: cachedEntry.contentType,
+            contentLength: cachedEntry.contentLength,
+            body: cachedBody,
+            bytesRead: cachedEntry.bodyBuffer.byteLength,
+            truncated: false,
+            redirectCount: 0,
+            cacheStatus: "revalidated",
+            revalidationStatus: 304,
+          };
+        }
+      }
+
+      // Handle 200 OK
+      if (responseOrRedirect.status === 200) {
+        const eligibility = checkResponseCacheEligibility({
+          targetUrl: currentUrl,
+          redirectCount,
+          status: 200,
+          truncated: responseOrRedirect.truncated,
+          headers: responseOrRedirect.rawHeaders,
+        });
+
+        if (networkCache?.enabled) {
+          if (eligibility.eligible && cacheKey) {
+            const newEntry: CachedHttpResponse = {
+              bodyBuffer: responseOrRedirect.bodyBuffer,
+              status: 200,
+              statusText: responseOrRedirect.statusText,
+              contentType: responseOrRedirect.contentType,
+              contentLength: responseOrRedirect.contentLength,
+              etag: eligibility.sanitizedEtag,
+              lastModified: eligibility.sanitizedLastModified,
+              storedAt: Date.now(),
+            };
+            networkCache.set(cacheKey, newEntry);
+            cacheStatus = cachedEntry ? "updated" : "stored";
+          } else {
+            // Invalidate old entry if new 200 is not eligible for caching
+            if (cachedEntry && cacheKey) {
+              networkCache.delete(cacheKey);
+            }
+            cacheStatus = eligibility.reason ? "uncacheable" : "miss";
+          }
+        }
+      } else if (responseOrRedirect.status >= 400 || responseOrRedirect.status === 304) {
+        // Non-200 / 4xx / 5xx invalidates any previous cache entry
+        if (networkCache?.enabled && cachedEntry && cacheKey) {
+          networkCache.delete(cacheKey);
+        }
+        if (networkCache?.enabled) {
+          cacheStatus = "uncacheable";
+        }
+      }
+
       return {
         requestedUrl,
         finalUrl: currentUrl.href,
@@ -201,6 +345,8 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
         bytesRead: responseOrRedirect.bytesRead,
         truncated: responseOrRedirect.truncated,
         redirectCount,
+        cacheStatus,
+        revalidationStatus,
       };
     }
   } finally {
@@ -219,6 +365,7 @@ interface SingleRequestOptions {
   readonly resolver: SafeDnsResolver;
   readonly signal: AbortSignal;
   readonly allowLoopbackForTesting?: boolean;
+  readonly conditionalHeaders?: Record<string, string>;
 }
 
 type SingleRequestResult =
@@ -230,8 +377,10 @@ type SingleRequestResult =
       readonly contentType?: string;
       readonly contentLength?: number;
       readonly body?: string;
+      readonly bodyBuffer: Buffer;
       readonly bytesRead: number;
       readonly truncated: boolean;
+      readonly rawHeaders: Record<string, string | string[] | undefined>;
     };
 
 async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleRequestResult> {
@@ -254,7 +403,7 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
       ? new https.Agent({
           keepAlive: false,
           maxSockets: 1,
-          rejectUnauthorized: true,
+          rejectUnauthorized: !allowLoopbackForTesting,
           lookup: customLookup as any,
         })
       : new http.Agent({
@@ -269,6 +418,7 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
       "Accept-Encoding": "identity",
       Connection: "close",
       Host: targetUrl.host,
+      ...(opts.conditionalHeaders || {}),
     };
 
     const requestOptions: http.RequestOptions = {
@@ -366,7 +516,7 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
         const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
         const inspectedContentType = parseContentTypeHeader(contentTypeHeader);
 
-        // Check empty body responses (e.g. 204 No Content)
+        // Check empty body responses (e.g. 204 No Content, 304 Not Modified)
         if (status === 204 || status === 304) {
           res.resume();
           signal.removeEventListener("abort", abortHandler);
@@ -378,8 +528,10 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
             contentType: contentTypeHeader,
             contentLength: 0,
             body: "",
+            bodyBuffer: Buffer.alloc(0),
             bytesRead: 0,
             truncated: false,
+            rawHeaders: res.headers,
           });
         }
 
@@ -437,12 +589,13 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
           cleanup();
 
           const totalBuffer = Buffer.concat(chunks, bytesRead);
+          const trimmedBuffer = truncated ? trimIncompleteTrailingUtf8(totalBuffer) : totalBuffer;
 
           // Strict UTF-8 decoding
           let decodedText = "";
           try {
             const decoder = new TextDecoder("utf-8", { fatal: true });
-            decodedText = decoder.decode(totalBuffer);
+            decodedText = decoder.decode(trimmedBuffer);
           } catch (err: any) {
             return reject(
               new NetworkSecurityError(
@@ -470,8 +623,10 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
             contentType: contentTypeHeader,
             contentLength: declaredContentLength ?? bytesRead,
             body: decodedText,
+            bodyBuffer: totalBuffer,
             bytesRead,
             truncated,
+            rawHeaders: res.headers,
           });
         };
 

@@ -56,12 +56,21 @@ export interface IpClassificationResult {
   readonly family: 4 | 6;
 }
 
+export type FetchUrlCacheStatus =
+  | "disabled"
+  | "miss"
+  | "stored"
+  | "revalidated"
+  | "updated"
+  | "uncacheable";
+
 export interface FetchUrlOptions {
   readonly url: string;
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly operatorPolicy?: import("./operator-policy.js").NetworkOperatorPolicy;
+  readonly networkCache?: import("./conditional-cache.js").HttpConditionalCache;
   /** Test-only dependency injection for safe testing with ephemeral ports and local mock servers */
   readonly customResolver?: SafeDnsResolver;
   readonly customAllowedPorts?: readonly number[];
@@ -79,4 +88,7 @@ export interface FetchUrlResult {
   readonly bytesRead: number;
   readonly truncated: boolean;
   readonly redirectCount: number;
+  readonly cacheStatus: FetchUrlCacheStatus;
+  readonly revalidationStatus?: number;
 }
+
