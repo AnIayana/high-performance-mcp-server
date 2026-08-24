@@ -5,6 +5,7 @@ import type {
   HttpConditionalCache,
   NetworkCachePolicy,
 } from "../network/conditional-cache.js";
+import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
 
 /**
  * Shared runtime context passed to tool and resource registration functions.
@@ -12,6 +13,7 @@ import type {
 export interface ServerContext {
   readonly profile: ToolProfile;
   readonly workspace?: WorkspaceConfig;
+  readonly workspacePolicy?: WorkspaceOperatorPolicy;
   readonly networkPolicy?: NetworkOperatorPolicy;
   readonly networkCachePolicy?: NetworkCachePolicy;
   readonly networkCache?: HttpConditionalCache;

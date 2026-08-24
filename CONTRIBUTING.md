@@ -46,7 +46,7 @@ When creating or modifying an MCP tool in `src/tools/`:
 
    export const toolMeta: ToolMetadata = {
      name: "my_tool",
-     category: "workspace", // "safe" | "workspace" | "network" | "diagnostics" | "benchmark" | "admin"
+     category: "workspace", // "safe" | "workspace" | "workspace_write" | "network" | "diagnostics" | "benchmark" | "admin"
      description: "Clear and concise explanation of what the tool does",
    };
    ```
@@ -61,6 +61,7 @@ When creating or modifying an MCP tool in `src/tools/`:
 5. **Tool Categorization**:
    - `safe`: Lightweight, read-only utilities with zero access to host internals (e.g. echo, ping).
    - `workspace`: Read-only filesystem operations, search, and file inspection within allowlisted roots.
+   - `workspace_write`: Guarded text file mutation (creation, overwriting, transactional editing) within allowlisted roots.
    - `network`: SSRF-hardened, read-only outbound HTTP/HTTPS GET requests to public destinations.
    - `diagnostics`: System inspection, performance metrics, and telemetry.
    - `benchmark`: CPU-intensive workloads or load tests.

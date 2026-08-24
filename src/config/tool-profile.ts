@@ -20,6 +20,7 @@ import type { ToolCategory } from "../tools/types.js";
 export type ToolProfile =
   | "safe"
   | "workspace"
+  | "workspace_write"
   | "network"
   | "diagnostics"
   | "benchmark"
@@ -29,6 +30,7 @@ export type ToolProfile =
 export const VALID_TOOL_PROFILES: readonly ToolProfile[] = [
   "safe",
   "workspace",
+  "workspace_write",
   "network",
   "diagnostics",
   "benchmark",
@@ -41,11 +43,12 @@ export const DEFAULT_TOOL_PROFILE: ToolProfile = "safe";
 const PROFILE_ALLOWED_CATEGORIES: Record<ToolProfile, readonly ToolCategory[]> = {
   safe: ["safe"],
   workspace: ["safe", "workspace"],
+  workspace_write: ["safe", "workspace", "workspace_write"],
   network: ["safe", "network"],
   diagnostics: ["safe", "diagnostics"],
   benchmark: ["safe", "benchmark"],
   admin: ["safe", "diagnostics", "admin"],
-  all: ["safe", "workspace", "network", "diagnostics", "benchmark", "admin"],
+  all: ["safe", "workspace", "workspace_write", "network", "diagnostics", "benchmark", "admin"],
 };
 
 /**

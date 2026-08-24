@@ -3,6 +3,7 @@ import { DEFAULT_TOOL_PROFILE, type ToolProfile } from "../config/tool-profile.j
 import type { WorkspaceConfig } from "../config/workspace.js";
 import type { NetworkCachePolicy } from "../network/conditional-cache.js";
 import type { NetworkOperatorPolicy } from "../network/operator-policy.js";
+import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
 import { createServer } from "../server.js";
 
 /**
@@ -13,10 +14,17 @@ export async function startStdioTransport(
   profile: ToolProfile = DEFAULT_TOOL_PROFILE,
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
-  networkCachePolicy?: NetworkCachePolicy
+  networkCachePolicy?: NetworkCachePolicy,
+  workspacePolicy?: WorkspaceOperatorPolicy
 ): Promise<void> {
   await serveStdio(() =>
-    createServer({ profile, workspaceConfig, networkPolicy, networkCachePolicy })
+    createServer({
+      profile,
+      workspaceConfig,
+      workspacePolicy,
+      networkPolicy,
+      networkCachePolicy,
+    })
   );
 }
 

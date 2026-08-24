@@ -27,6 +27,14 @@ import {
   MAX_FETCH_TIMEOUT_MS,
 } from "../network/policy.js";
 import {
+  DEFAULT_MAX_WRITE_BYTES,
+  DEFAULT_WORKSPACE_OPERATOR_POLICY,
+  HARD_MAX_WRITE_BYTES,
+  MIN_WRITE_BYTES,
+  createWorkspaceOperatorPolicy,
+  type WorkspaceOperatorPolicy,
+} from "../workspace/write-service.js";
+import {
   DEFAULT_TOOL_PROFILE,
   isValidToolProfile,
   type ToolProfile,
@@ -41,6 +49,7 @@ export interface ParsedCliConfig {
   port: number;
   profile: ToolProfile;
   roots: string[];
+  workspacePolicy: WorkspaceOperatorPolicy;
   networkPolicy: NetworkOperatorPolicy;
   networkCachePolicy: NetworkCachePolicy;
   error?: string;
@@ -104,6 +113,7 @@ export function getHelpText(): string {
     "  --port=<number>                HTTP server port (default: 3000, only for http transport)",
     "  --profile=<profile>            Security tool profile (default: safe)",
     "  --root=<path>                  Allowlisted read-only workspace root (repeatable, max 16)",
+    "  --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)",
     "  --network-allow-host=<pattern> Allowlisted public hostname or *.domain pattern (repeatable, operator restriction)",
     "  --network-deny-host=<pattern>  Denylisted hostname or *.domain pattern (repeatable, operator restriction)",
     "  --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)",
@@ -118,18 +128,20 @@ export function getHelpText(): string {
     "  --version, -v                  Show version and exit",
     "",
     "Tool Profiles:",
-    "  safe          Lightweight utilities (echo, ping). Safe default for public exposure.",
-    "  workspace     Read-only filesystem tools strictly limited to configured --root directories.",
-    "  network       SSRF-hardened read-only web fetching (fetch_url) for public web resources.",
-    "  diagnostics   Observability tools (system stats, metrics, cache stats, pool stats).",
-    "  benchmark     Compute workloads (main/worker prime calculations, cached prime count).",
-    "  admin         Diagnostics plus operational mutations (reset cache, reset metrics).",
-    "  all           Enables all registered tool categories (safe, workspace, network, diagnostics, benchmark, admin).",
+    "  safe             Lightweight utilities (echo, ping). Safe default for public exposure.",
+    "  workspace        Read-only filesystem tools strictly limited to configured --root directories.",
+    "  workspace_write  Workspace tools including guarded text file write and edit capabilities.",
+    "  network          SSRF-hardened read-only web fetching (fetch_url) for public web resources.",
+    "  diagnostics      Observability tools (system stats, metrics, cache stats, pool stats).",
+    "  benchmark        Compute workloads (main/worker prime calculations, cached prime count).",
+    "  admin            Diagnostics plus operational mutations (reset cache, reset metrics).",
+    "  all              Enables all registered tool categories (safe, workspace, workspace_write, network, diagnostics, benchmark, admin).",
     "",
     "Environment Variables:",
-    "  MCP_PROFILE                    Default tool profile override (safe|workspace|network|diagnostics|benchmark|admin|all)",
+    "  MCP_PROFILE                    Default tool profile override (safe|workspace|workspace_write|network|diagnostics|benchmark|admin|all)",
     "  PORT                           Default HTTP port override (e.g. 3000)",
     "  MCP_ROOTS_JSON                 JSON array of read-only workspace root paths (e.g. [\"/path/to/project\"])",
+    "  MCP_WORKSPACE_MAX_WRITE_BYTES  Operator workspace write size cap in bytes override (1-5242880)",
     "  MCP_NETWORK_ALLOW_HOSTS_JSON   JSON array of allowed public hostname patterns (e.g. [\"example.com\",\"*.githubusercontent.com\"])",
     "  MCP_NETWORK_DENY_HOSTS_JSON    JSON array of denied hostname patterns (e.g. [\"ads.example.com\"])",
     "  MCP_NETWORK_HTTPS_ONLY         Enforce HTTPS-only mode (true/1/false/0)",
@@ -146,6 +158,7 @@ export function getHelpText(): string {
     "Examples:",
     `  ${CLI_BIN_NAME}`,
     `  ${CLI_BIN_NAME} --profile=workspace --root=./project`,
+    `  ${CLI_BIN_NAME} --profile=workspace_write --root=./project --workspace-max-write-bytes=2097152`,
     `  ${CLI_BIN_NAME} --profile=network --network-allow-host=example.com --network-allow-host="*.githubusercontent.com" --network-https-only`,
     `  ${CLI_BIN_NAME} --profile=network --network-max-response-bytes=262144 --network-max-timeout-ms=5000`,
     `  ${CLI_BIN_NAME} --profile=network --network-cache --network-cache-max-entries=256`,
@@ -215,6 +228,11 @@ export function parseCliArgs(
   let envMaxResponseBytes: number | undefined;
   let envMaxTimeoutMs: number | undefined;
 
+  // Workspace mutation accumulators
+  let cliWorkspaceMaxWriteBytes: number | undefined;
+  let envWorkspaceMaxWriteBytes: number | undefined;
+  let seenWorkspaceMaxWriteBytes = false;
+
   // Network conditional cache accumulators
   let cliCacheEnabled: boolean | undefined;
   let cliCacheMaxSizeBytes: number | undefined;
@@ -228,6 +246,19 @@ export function parseCliArgs(
 
   const defaultPolicy = DEFAULT_NETWORK_OPERATOR_POLICY;
   const defaultCachePolicy = DEFAULT_NETWORK_CACHE_POLICY;
+  const defaultWorkspacePolicy = DEFAULT_WORKSPACE_OPERATOR_POLICY;
+
+  const errorResult = (errorMessage: string): ParsedCliConfig => ({
+    action: action === "list-tools" ? "list-tools" : "start",
+    transport,
+    port,
+    profile: DEFAULT_TOOL_PROFILE,
+    roots: [],
+    workspacePolicy: defaultWorkspacePolicy,
+    networkPolicy: defaultPolicy,
+    networkCachePolicy: defaultCachePolicy,
+    error: errorMessage,
+  });
 
   // 1. Check for immediate explicit help or version flags
   if (args.includes("--help") || args.includes("-h")) {
@@ -237,6 +268,7 @@ export function parseCliArgs(
       port,
       profile: DEFAULT_TOOL_PROFILE,
       roots: [],
+      workspacePolicy: defaultWorkspacePolicy,
       networkPolicy: defaultPolicy,
       networkCachePolicy: defaultCachePolicy,
     };
@@ -248,6 +280,7 @@ export function parseCliArgs(
       port,
       profile: DEFAULT_TOOL_PROFILE,
       roots: [],
+      workspacePolicy: defaultWorkspacePolicy,
       networkPolicy: defaultPolicy,
       networkCachePolicy: defaultCachePolicy,
     };
@@ -257,16 +290,9 @@ export function parseCliArgs(
   if (env.PORT !== undefined && env.PORT.trim().length > 0) {
     const parsedPort = parseStrictPort(env.PORT);
     if (parsedPort === null) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid PORT environment variable: "${env.PORT}". Must be an integer between 1 and 65535.`,
-      };
+      return errorResult(
+        `Invalid PORT environment variable: "${env.PORT}". Must be an integer between 1 and 65535.`
+      );
     }
     port = parsedPort;
   }
@@ -276,16 +302,9 @@ export function parseCliArgs(
     if (isValidToolProfile(envProfile)) {
       profileArg = envProfile;
     } else {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_PROFILE environment variable: "${envProfile}". Valid profiles: ${VALID_TOOL_PROFILES.join(", ")}`,
-      };
+      return errorResult(
+        `Invalid MCP_PROFILE environment variable: "${envProfile}". Valid profiles: ${VALID_TOOL_PROFILES.join(", ")}`
+      );
     }
   }
 
@@ -293,17 +312,25 @@ export function parseCliArgs(
     try {
       envRoots = parseJsonStringArray("MCP_ROOTS_JSON", env.MCP_ROOTS_JSON);
     } catch (err: any) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: err.message,
-      };
+      return errorResult(err.message);
     }
+  }
+
+  if (
+    env.MCP_WORKSPACE_MAX_WRITE_BYTES !== undefined &&
+    env.MCP_WORKSPACE_MAX_WRITE_BYTES.trim().length > 0
+  ) {
+    const parsed = parseStrictInteger(
+      env.MCP_WORKSPACE_MAX_WRITE_BYTES,
+      MIN_WRITE_BYTES,
+      HARD_MAX_WRITE_BYTES
+    );
+    if (parsed === null) {
+      return errorResult(
+        `Invalid MCP_WORKSPACE_MAX_WRITE_BYTES environment variable: "${env.MCP_WORKSPACE_MAX_WRITE_BYTES}". Must be an integer between ${MIN_WRITE_BYTES} and ${HARD_MAX_WRITE_BYTES}.`
+      );
+    }
+    envWorkspaceMaxWriteBytes = parsed;
   }
 
   // Network environment variables
@@ -315,16 +342,7 @@ export function parseCliArgs(
       );
       envAllowHosts = rawHosts.map(normalizeHostPattern);
     } catch (err: any) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: err.message,
-      };
+      return errorResult(err.message);
     }
   }
 
@@ -336,16 +354,7 @@ export function parseCliArgs(
       );
       envDenyHosts = rawHosts.map(normalizeHostPattern);
     } catch (err: any) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: err.message,
-      };
+      return errorResult(err.message);
     }
   }
 
@@ -356,16 +365,9 @@ export function parseCliArgs(
     } else if (val === "false" || val === "0") {
       envHttpsOnly = false;
     } else {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_HTTPS_ONLY environment variable: "${env.MCP_NETWORK_HTTPS_ONLY}". Must be true or false.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_HTTPS_ONLY environment variable: "${env.MCP_NETWORK_HTTPS_ONLY}". Must be true or false.`
+      );
     }
   }
 
@@ -375,16 +377,9 @@ export function parseCliArgs(
   ) {
     const parsed = parseStrictInteger(env.MCP_NETWORK_MAX_RESPONSE_BYTES, 1, MAX_FETCH_MAX_BYTES);
     if (parsed === null) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_MAX_RESPONSE_BYTES environment variable: "${env.MCP_NETWORK_MAX_RESPONSE_BYTES}". Must be an integer between 1 and ${MAX_FETCH_MAX_BYTES}.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_MAX_RESPONSE_BYTES environment variable: "${env.MCP_NETWORK_MAX_RESPONSE_BYTES}". Must be an integer between 1 and ${MAX_FETCH_MAX_BYTES}.`
+      );
     }
     envMaxResponseBytes = parsed;
   }
@@ -395,16 +390,9 @@ export function parseCliArgs(
   ) {
     const parsed = parseStrictInteger(env.MCP_NETWORK_MAX_TIMEOUT_MS, 1000, MAX_FETCH_TIMEOUT_MS);
     if (parsed === null) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_MAX_TIMEOUT_MS environment variable: "${env.MCP_NETWORK_MAX_TIMEOUT_MS}". Must be an integer between 1000 and ${MAX_FETCH_TIMEOUT_MS}.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_MAX_TIMEOUT_MS environment variable: "${env.MCP_NETWORK_MAX_TIMEOUT_MS}". Must be an integer between 1000 and ${MAX_FETCH_TIMEOUT_MS}.`
+      );
     }
     envMaxTimeoutMs = parsed;
   }
@@ -420,16 +408,9 @@ export function parseCliArgs(
     } else if (val === "false" || val === "0") {
       envCacheEnabled = false;
     } else {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_CACHE_ENABLED environment variable: "${env.MCP_NETWORK_CACHE_ENABLED}". Must be true or false.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_CACHE_ENABLED environment variable: "${env.MCP_NETWORK_CACHE_ENABLED}". Must be true or false.`
+      );
     }
   }
 
@@ -443,16 +424,9 @@ export function parseCliArgs(
       MAX_NETWORK_CACHE_MAX_SIZE_BYTES
     );
     if (parsed === null) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_CACHE_MAX_SIZE_BYTES environment variable: "${env.MCP_NETWORK_CACHE_MAX_SIZE_BYTES}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_SIZE_BYTES} and ${MAX_NETWORK_CACHE_MAX_SIZE_BYTES}.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_CACHE_MAX_SIZE_BYTES environment variable: "${env.MCP_NETWORK_CACHE_MAX_SIZE_BYTES}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_SIZE_BYTES} and ${MAX_NETWORK_CACHE_MAX_SIZE_BYTES}.`
+      );
     }
     envCacheMaxSizeBytes = parsed;
   }
@@ -467,16 +441,9 @@ export function parseCliArgs(
       MAX_NETWORK_CACHE_MAX_ENTRIES
     );
     if (parsed === null) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_CACHE_MAX_ENTRIES environment variable: "${env.MCP_NETWORK_CACHE_MAX_ENTRIES}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_ENTRIES} and ${MAX_NETWORK_CACHE_MAX_ENTRIES}.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_CACHE_MAX_ENTRIES environment variable: "${env.MCP_NETWORK_CACHE_MAX_ENTRIES}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_ENTRIES} and ${MAX_NETWORK_CACHE_MAX_ENTRIES}.`
+      );
     }
     envCacheMaxEntries = parsed;
   }
@@ -491,16 +458,9 @@ export function parseCliArgs(
       MAX_NETWORK_CACHE_RETENTION_TTL_MS
     );
     if (parsed === null) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Invalid MCP_NETWORK_CACHE_TTL_MS environment variable: "${env.MCP_NETWORK_CACHE_TTL_MS}". Must be an integer between ${MIN_NETWORK_CACHE_RETENTION_TTL_MS} and ${MAX_NETWORK_CACHE_RETENTION_TTL_MS}.`,
-      };
+      return errorResult(
+        `Invalid MCP_NETWORK_CACHE_TTL_MS environment variable: "${env.MCP_NETWORK_CACHE_TTL_MS}". Must be an integer between ${MIN_NETWORK_CACHE_RETENTION_TTL_MS} and ${MAX_NETWORK_CACHE_RETENTION_TTL_MS}.`
+      );
     }
     envCacheTtlMs = parsed;
   }
@@ -523,30 +483,16 @@ export function parseCliArgs(
 
     // Disallow positional arguments
     if (!arg.startsWith("-")) {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Unexpected positional argument: "${arg}". Use --help for usage syntax.`,
-      };
+      return errorResult(
+        `Unexpected positional argument: "${arg}". Use --help for usage syntax.`
+      );
     }
 
     if (arg === "--list-tools") {
       if (seenListTools) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--list-tools". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--list-tools". This option may only be specified once.`
+        );
       }
       seenListTools = true;
       action = "list-tools";
@@ -555,16 +501,9 @@ export function parseCliArgs(
 
     if (arg === "--network-https-only") {
       if (seenHttpsOnly) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-https-only". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-https-only". This option may only be specified once.`
+        );
       }
       seenHttpsOnly = true;
       cliHttpsOnly = true;
@@ -573,16 +512,9 @@ export function parseCliArgs(
 
     if (arg === "--network-cache") {
       if (seenCache) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-cache". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-cache". This option may only be specified once.`
+        );
       }
       seenCache = true;
       cliCacheEnabled = true;
@@ -601,30 +533,14 @@ export function parseCliArgs(
 
     if (optName === "--transport") {
       if (seenTransport) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--transport". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--transport". This option may only be specified once.`
+        );
       }
       seenTransport = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--transport".`,
-          };
+          return errorResult(`Missing value for option "--transport".`);
         }
         optValue = args[++i]!;
       }
@@ -632,43 +548,20 @@ export function parseCliArgs(
       if (value === "stdio" || value === "http") {
         transport = value;
       } else {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid transport option: "${value}". Supported transports: stdio, http`,
-        };
+        return errorResult(
+          `Invalid transport option: "${value}". Supported transports: stdio, http`
+        );
       }
     } else if (optName === "--port") {
       if (seenPort) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--port". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--port". This option may only be specified once.`
+        );
       }
       seenPort = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--port".`,
-          };
+          return errorResult(`Missing value for option "--port".`);
         }
         optValue = args[++i]!;
       }
@@ -676,43 +569,20 @@ export function parseCliArgs(
       if (parsedPort !== null) {
         port = parsedPort;
       } else {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid port option: "${optValue}". Must be a valid TCP port (1-65535).`,
-        };
+        return errorResult(
+          `Invalid port option: "${optValue}". Must be a valid TCP port (1-65535).`
+        );
       }
     } else if (optName === "--profile") {
       if (seenProfile) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--profile". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--profile". This option may only be specified once.`
+        );
       }
       seenProfile = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--profile".`,
-          };
+          return errorResult(`Missing value for option "--profile".`);
         }
         optValue = args[++i]!;
       }
@@ -720,60 +590,47 @@ export function parseCliArgs(
       if (isValidToolProfile(value)) {
         profileArg = value;
       } else {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid tool profile: "${value}". Valid profiles: ${VALID_TOOL_PROFILES.join(", ")}`,
-        };
+        return errorResult(
+          `Invalid tool profile: "${value}". Valid profiles: ${VALID_TOOL_PROFILES.join(", ")}`
+        );
       }
     } else if (optName === "--root") {
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--root".`,
-          };
+          return errorResult(`Missing value for option "--root".`);
         }
         optValue = args[++i]!;
       }
-      const rootPath = optValue.trim();
-      if (rootPath.length === 0) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --root option: Root path cannot be empty.`,
-        };
+      const trimmed = optValue.trim();
+      if (trimmed.length > 0) {
+        cliRoots.push(trimmed);
+      } else {
+        return errorResult(`Invalid --root option: Root path cannot be empty.`);
       }
-      cliRoots.push(rootPath);
+    } else if (optName === "--workspace-max-write-bytes") {
+      if (seenWorkspaceMaxWriteBytes) {
+        return errorResult(
+          `Duplicate option specified: "--workspace-max-write-bytes". This option may only be specified once.`
+        );
+      }
+      seenWorkspaceMaxWriteBytes = true;
+      if (optValue === undefined) {
+        if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+          return errorResult(`Missing value for option "--workspace-max-write-bytes".`);
+        }
+        optValue = args[++i]!;
+      }
+      const parsed = parseStrictInteger(optValue, MIN_WRITE_BYTES, HARD_MAX_WRITE_BYTES);
+      if (parsed === null) {
+        return errorResult(
+          `Invalid --workspace-max-write-bytes option: "${optValue}". Must be an integer between ${MIN_WRITE_BYTES} and ${HARD_MAX_WRITE_BYTES}.`
+        );
+      }
+      cliWorkspaceMaxWriteBytes = parsed;
     } else if (optName === "--network-allow-host") {
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-allow-host".`,
-          };
+          return errorResult(`Missing value for option "--network-allow-host".`);
         }
         optValue = args[++i]!;
       }
@@ -781,30 +638,12 @@ export function parseCliArgs(
         const normalized = normalizeHostPattern(optValue);
         cliAllowHosts.push(normalized);
       } catch (err: any) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-allow-host option: ${err.message}`,
-        };
+        return errorResult(`Invalid --network-allow-host option: ${err.message}`);
       }
     } else if (optName === "--network-deny-host") {
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-deny-host".`,
-          };
+          return errorResult(`Missing value for option "--network-deny-host".`);
         }
         optValue = args[++i]!;
       }
@@ -812,129 +651,58 @@ export function parseCliArgs(
         const normalized = normalizeHostPattern(optValue);
         cliDenyHosts.push(normalized);
       } catch (err: any) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-deny-host option: ${err.message}`,
-        };
+        return errorResult(`Invalid --network-deny-host option: ${err.message}`);
       }
     } else if (optName === "--network-max-response-bytes") {
       if (seenMaxResponseBytes) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-max-response-bytes". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-max-response-bytes". This option may only be specified once.`
+        );
       }
       seenMaxResponseBytes = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-max-response-bytes".`,
-          };
+          return errorResult(`Missing value for option "--network-max-response-bytes".`);
         }
         optValue = args[++i]!;
       }
       const parsed = parseStrictInteger(optValue, 1, MAX_FETCH_MAX_BYTES);
       if (parsed === null) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-max-response-bytes option: "${optValue}". Must be an integer between 1 and ${MAX_FETCH_MAX_BYTES}.`,
-        };
+        return errorResult(
+          `Invalid --network-max-response-bytes option: "${optValue}". Must be an integer between 1 and ${MAX_FETCH_MAX_BYTES}.`
+        );
       }
       cliMaxResponseBytes = parsed;
     } else if (optName === "--network-max-timeout-ms") {
       if (seenMaxTimeoutMs) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-max-timeout-ms". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-max-timeout-ms". This option may only be specified once.`
+        );
       }
       seenMaxTimeoutMs = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-max-timeout-ms".`,
-          };
+          return errorResult(`Missing value for option "--network-max-timeout-ms".`);
         }
         optValue = args[++i]!;
       }
       const parsed = parseStrictInteger(optValue, 1000, MAX_FETCH_TIMEOUT_MS);
       if (parsed === null) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-max-timeout-ms option: "${optValue}". Must be an integer between 1000 and ${MAX_FETCH_TIMEOUT_MS}.`,
-        };
+        return errorResult(
+          `Invalid --network-max-timeout-ms option: "${optValue}". Must be an integer between 1000 and ${MAX_FETCH_TIMEOUT_MS}.`
+        );
       }
       cliMaxTimeoutMs = parsed;
     } else if (optName === "--network-cache-max-size-bytes") {
       if (seenCacheMaxSize) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-cache-max-size-bytes". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-cache-max-size-bytes". This option may only be specified once.`
+        );
       }
       seenCacheMaxSize = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-cache-max-size-bytes".`,
-          };
+          return errorResult(`Missing value for option "--network-cache-max-size-bytes".`);
         }
         optValue = args[++i]!;
       }
@@ -944,44 +712,21 @@ export function parseCliArgs(
         MAX_NETWORK_CACHE_MAX_SIZE_BYTES
       );
       if (parsed === null) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-cache-max-size-bytes option: "${optValue}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_SIZE_BYTES} and ${MAX_NETWORK_CACHE_MAX_SIZE_BYTES}.`,
-        };
+        return errorResult(
+          `Invalid --network-cache-max-size-bytes option: "${optValue}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_SIZE_BYTES} and ${MAX_NETWORK_CACHE_MAX_SIZE_BYTES}.`
+        );
       }
       cliCacheMaxSizeBytes = parsed;
     } else if (optName === "--network-cache-max-entries") {
       if (seenCacheMaxEntries) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-cache-max-entries". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-cache-max-entries". This option may only be specified once.`
+        );
       }
       seenCacheMaxEntries = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-cache-max-entries".`,
-          };
+          return errorResult(`Missing value for option "--network-cache-max-entries".`);
         }
         optValue = args[++i]!;
       }
@@ -991,44 +736,21 @@ export function parseCliArgs(
         MAX_NETWORK_CACHE_MAX_ENTRIES
       );
       if (parsed === null) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-cache-max-entries option: "${optValue}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_ENTRIES} and ${MAX_NETWORK_CACHE_MAX_ENTRIES}.`,
-        };
+        return errorResult(
+          `Invalid --network-cache-max-entries option: "${optValue}". Must be an integer between ${MIN_NETWORK_CACHE_MAX_ENTRIES} and ${MAX_NETWORK_CACHE_MAX_ENTRIES}.`
+        );
       }
       cliCacheMaxEntries = parsed;
     } else if (optName === "--network-cache-ttl-ms") {
       if (seenCacheTtl) {
-        return {
-          action: "start",
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Duplicate option specified: "--network-cache-ttl-ms". This option may only be specified once.`,
-        };
+        return errorResult(
+          `Duplicate option specified: "--network-cache-ttl-ms". This option may only be specified once.`
+        );
       }
       seenCacheTtl = true;
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
-          return {
-            action,
-            transport,
-            port,
-            profile: DEFAULT_TOOL_PROFILE,
-            roots: [],
-            networkPolicy: defaultPolicy,
-            networkCachePolicy: defaultCachePolicy,
-            error: `Missing value for option "--network-cache-ttl-ms".`,
-          };
+          return errorResult(`Missing value for option "--network-cache-ttl-ms".`);
         }
         optValue = args[++i]!;
       }
@@ -1038,35 +760,28 @@ export function parseCliArgs(
         MAX_NETWORK_CACHE_RETENTION_TTL_MS
       );
       if (parsed === null) {
-        return {
-          action,
-          transport,
-          port,
-          profile: DEFAULT_TOOL_PROFILE,
-          roots: [],
-          networkPolicy: defaultPolicy,
-          networkCachePolicy: defaultCachePolicy,
-          error: `Invalid --network-cache-ttl-ms option: "${optValue}". Must be an integer between ${MIN_NETWORK_CACHE_RETENTION_TTL_MS} and ${MAX_NETWORK_CACHE_RETENTION_TTL_MS}.`,
-        };
+        return errorResult(
+          `Invalid --network-cache-ttl-ms option: "${optValue}". Must be an integer between ${MIN_NETWORK_CACHE_RETENTION_TTL_MS} and ${MAX_NETWORK_CACHE_RETENTION_TTL_MS}.`
+        );
       }
       cliCacheTtlMs = parsed;
     } else {
-      return {
-        action: "start",
-        transport,
-        port,
-        profile: DEFAULT_TOOL_PROFILE,
-        roots: [],
-        networkPolicy: defaultPolicy,
-        networkCachePolicy: defaultCachePolicy,
-        error: `Unknown CLI option: "${arg}". Use --help to view available options.`,
-      };
+      return errorResult(
+        `Unknown CLI option: "${arg}". Use --help to view available options.`
+      );
     }
   }
 
   const profile: ToolProfile =
     profileArg && isValidToolProfile(profileArg) ? profileArg : DEFAULT_TOOL_PROFILE;
   const roots = cliRoots.length > 0 ? cliRoots : (envRoots ?? []);
+
+  // Precedence resolution for workspace policy:
+  const effectiveWorkspaceMaxWriteBytes =
+    cliWorkspaceMaxWriteBytes ?? envWorkspaceMaxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES;
+  const workspacePolicy = createWorkspaceOperatorPolicy({
+    maxWriteBytes: effectiveWorkspaceMaxWriteBytes,
+  });
 
   // Precedence resolution for network policy:
   // Explicit CLI list overrides environment list completely (no silent merge)
@@ -1104,18 +819,15 @@ export function parseCliArgs(
     retentionTtlMs: effectiveCacheTtlMs,
   });
 
-  // Validation: Workspace profile requires at least one allowed root when starting server
-  if (action === "start" && (profile === "workspace" || profile === "all") && roots.length === 0) {
-    return {
-      action,
-      transport,
-      port,
-      profile,
-      roots,
-      networkPolicy,
-      networkCachePolicy,
-      error: "Workspace profile requires at least one allowed root. Use --root=<path> or MCP_ROOTS_JSON.",
-    };
+  // Validation: Workspace profiles require at least one allowed root when starting server
+  if (
+    action === "start" &&
+    (profile === "workspace" || profile === "workspace_write" || profile === "all") &&
+    roots.length === 0
+  ) {
+    return errorResult(
+      "Workspace profile requires at least one allowed root. Use --root=<path> or MCP_ROOTS_JSON."
+    );
   }
 
   return {
@@ -1124,8 +836,8 @@ export function parseCliArgs(
     port,
     profile,
     roots,
+    workspacePolicy,
     networkPolicy,
     networkCachePolicy,
   };
 }
-

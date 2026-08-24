@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import type { WorkspaceConfig } from "../config/workspace.js";
 import {
@@ -38,6 +39,7 @@ export interface ReadTextFileResult {
   bytesRead: number;
   truncated: boolean;
   encoding: "utf-8";
+  sha256?: string;
 }
 
 /**
@@ -159,6 +161,9 @@ export async function readTextFileService(
   const truncated = resolved.stats.size > requestedLimit || bytesRead > requestedLimit;
   const actualBytesCount = Math.min(bytesRead, requestedLimit);
   const text = slice.subarray(0, actualBytesCount).toString("utf8");
+  const sha256 = !truncated
+    ? crypto.createHash("sha256").update(slice.subarray(0, actualBytesCount)).digest("hex")
+    : undefined;
 
   return {
     rootId: resolved.root.id,
@@ -168,5 +173,6 @@ export async function readTextFileService(
     bytesRead: actualBytesCount,
     truncated,
     encoding: "utf-8",
+    sha256,
   };
 }

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `workspace_write` tool profile exposing guarded text file creation/overwrite (`write_text_file`) and transactional literal editing (`edit_text_file`) capabilities.
+- Optimistic concurrency control via mandatory `expectedSha256` hashing for file overwrites and edits to prevent lost updates and race conditions.
+- Transactional in-memory sequential editing engine applying exact literal replacements with strict occurrence guarantees (`expectedOccurrences`) and zero regex replacement token expansion (`$$`, `$1`, `$&`).
+- Operator-configurable workspace write limit policy (`--workspace-max-write-bytes`, `MCP_WORKSPACE_MAX_WRITE_BYTES`) with a 1 MiB default and 5 MiB hard maximum ceiling.
+- Authoritative `sha256` digest returned in non-truncated `read_text_file` output to facilitate seamless optimistic concurrency workflows.
 - Opt-in `network` tool profile exposing the SSRF-hardened `fetch_url` read-only HTTP/HTTPS GET tool.
 - Dedicated network security engine with mathematical IPv4/IPv6 classification (`net.BlockList`), custom socket `lookup` hooks preventing TOCTOU DNS rebinding, manual redirect re-validation (up to 5 redirects), and bounded stream decoding.
 - Operator-configurable network egress policy supporting allowed host patterns (`--network-allow-host`, `MCP_NETWORK_ALLOW_HOSTS_JSON`), denied host patterns (`--network-deny-host`, `MCP_NETWORK_DENY_HOSTS_JSON`), HTTPS-only mode (`--network-https-only`, `MCP_NETWORK_HTTPS_ONLY`), max response byte caps (`--network-max-response-bytes`, `MCP_NETWORK_MAX_RESPONSE_BYTES`), and max timeout caps (`--network-max-timeout-ms`, `MCP_NETWORK_MAX_TIMEOUT_MS`).
@@ -17,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Workspace isolation and canonical parent directory containment verification preventing symlink and junction escape attacks during file creation and modification.
+- Atomic same-directory file writing strategy using temporary files (`.mcp-temp-<uuid>.tmp`), explicit filesystem sync (`fsync`), pre-rename race revalidation, and atomic `fs.rename` replacement.
+- Invariant preservation: standard `workspace` profile remains strictly read-only; mutation tools exist exclusively in `workspace_write` and `all` profiles.
+- Zero process execution, zero file deletion, zero directory removal, zero permission mutation (`chmod`), and zero arbitrary absolute path access.
 - Multi-layered SSRF protection blocking loopback, private (RFC 1918), link-local, carrier-grade NAT, cloud metadata (`169.254.169.254`), IPv4-mapped IPv6 (`::ffff:x.x.x.x`), IPv6 transition ranges, and multicast destinations.
 - Connection-time authoritative DNS lookup hook preventing DNS rebinding during socket establishment.
 - Strict additive operator egress policy layer: operator configuration can never bypass built-in private IP, loopback, or cloud metadata protections.

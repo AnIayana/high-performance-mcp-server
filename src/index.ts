@@ -56,14 +56,16 @@ async function main(): Promise<void> {
       config.profile,
       workspaceConfig,
       config.networkPolicy,
-      config.networkCachePolicy
+      config.networkCachePolicy,
+      config.workspacePolicy
     );
   } else {
     await startStdioTransport(
       config.profile,
       workspaceConfig,
       config.networkPolicy,
-      config.networkCachePolicy
+      config.networkCachePolicy,
+      config.workspacePolicy
     );
   }
 }

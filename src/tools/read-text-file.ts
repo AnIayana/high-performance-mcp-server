@@ -44,6 +44,7 @@ export default function registerReadTextFileTool(
         sizeBytes: z.number(),
         truncated: z.boolean(),
         encoding: z.literal("utf-8"),
+        sha256: z.string().optional(),
       }),
     },
     withToolMetrics(toolMeta.name, async (args) => {
