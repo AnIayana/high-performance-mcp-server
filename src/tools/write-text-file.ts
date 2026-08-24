@@ -12,6 +12,25 @@ export const toolMeta: ToolMetadata = {
     "Safely creates a new text file or overwrites an existing text file with optimistic SHA-256 concurrency within an allowlisted workspace root",
 };
 
+export const writeTextFileInputSchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
+    path: z.string().min(1).describe("Relative file path within the root"),
+    mode: z.literal("create").describe("Write mode: create a new file only (fails if file already exists)"),
+    content: z.string().describe("UTF-8 text content to write"),
+  }),
+  z.strictObject({
+    rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
+    path: z.string().min(1).describe("Relative file path within the root"),
+    mode: z.literal("overwrite").describe("Write mode: atomically overwrite an existing file (requires expectedSha256)"),
+    content: z.string().describe("UTF-8 text content to write"),
+    expectedSha256: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/, "expectedSha256 must be a 64-character lowercase hex SHA-256 string")
+      .describe("Expected 64-character lowercase hex SHA-256 hash of the existing file"),
+  }),
+]);
+
 export default function registerWriteTextFileTool(
   server: McpServer,
   context?: ServerContext
@@ -21,24 +40,7 @@ export default function registerWriteTextFileTool(
     {
       title: "Write Text File",
       description: toolMeta.description,
-      inputSchema: z.discriminatedUnion("mode", [
-        z.object({
-          rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
-          path: z.string().min(1).describe("Relative file path within the root"),
-          mode: z.literal("create").describe("Write mode: create a new file only (fails if file already exists)"),
-          content: z.string().describe("UTF-8 text content to write"),
-        }),
-        z.object({
-          rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
-          path: z.string().min(1).describe("Relative file path within the root"),
-          mode: z.literal("overwrite").describe("Write mode: atomically overwrite an existing file (requires expectedSha256)"),
-          content: z.string().describe("UTF-8 text content to write"),
-          expectedSha256: z
-            .string()
-            .regex(/^[a-f0-9]{64}$/, "expectedSha256 must be a 64-character lowercase hex SHA-256 string")
-            .describe("Expected 64-character lowercase hex SHA-256 hash of the existing file"),
-        }),
-      ]),
+      inputSchema: writeTextFileInputSchema,
       outputSchema: z.object({
         rootId: z.string(),
         path: z.string(),

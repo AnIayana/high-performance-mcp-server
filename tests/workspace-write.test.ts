@@ -9,7 +9,7 @@ import * as z from "zod/v4";
 import { resolveWorkspaceConfig } from "../src/config/workspace.js";
 import type { ServerContext } from "../src/core/server-context.js";
 import registerEditTextFileTool from "../src/tools/edit-text-file.js";
-import registerWriteTextFileTool from "../src/tools/write-text-file.js";
+import registerWriteTextFileTool, { writeTextFileInputSchema } from "../src/tools/write-text-file.js";
 import { readTextFileService } from "../src/workspace/service.js";
 import {
   _setPreRenameHookForTesting,
@@ -886,44 +886,41 @@ test("readTextFileService — returns sha256 for non-truncated text read and omi
   }
 });
 
-test("write_text_file — Public Zod Schema validation contracts (create vs overwrite)", () => {
-  const schema = z.discriminatedUnion("mode", [
-    z.object({
-      rootId: z.string().optional(),
-      path: z.string().min(1),
-      mode: z.literal("create"),
-      content: z.string(),
-    }),
-    z.object({
-      rootId: z.string().optional(),
-      path: z.string().min(1),
-      mode: z.literal("overwrite"),
-      content: z.string(),
-      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/),
-    }),
-  ]);
-
-  // Valid create
-  const validCreate = schema.safeParse({
+test("write_text_file — Public Zod Schema strict validation contracts (create vs overwrite)", () => {
+  // CREATE TESTS
+  // 1. Valid create without expectedSha256
+  const validCreate = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
     path: "test.txt",
     mode: "create",
     content: "hello",
   });
   assert.equal(validCreate.success, true);
 
-  // Invalid create (with expectedSha256)
-  const invalidCreate = schema.safeParse({
+  // 2. Create with expectedSha256 is strictly rejected
+  const createWithHash = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
     path: "test.txt",
     mode: "create",
     content: "hello",
-    expectedSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    expectedSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   });
-  // Note: in discriminated union, passing extra fields fails if strict or fails matching create branch
-  // When mode is create, expectedSha256 is not defined on create branch
-  assert.equal(validCreate.success, true);
+  assert.equal(createWithHash.success, false);
 
-  // Valid overwrite
-  const validOverwrite = schema.safeParse({
+  // 3. Create with arbitrary unknown property is strictly rejected
+  const createWithUnknown = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
+    path: "test.txt",
+    mode: "create",
+    content: "hello",
+    unknownProp: "arbitrary",
+  });
+  assert.equal(createWithUnknown.success, false);
+
+  // OVERWRITE TESTS
+  // 4. Overwrite with valid lowercase 64-char hex hash
+  const validOverwrite = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
     path: "test.txt",
     mode: "overwrite",
     content: "hello",
@@ -931,16 +928,18 @@ test("write_text_file — Public Zod Schema validation contracts (create vs over
   });
   assert.equal(validOverwrite.success, true);
 
-  // Invalid overwrite (missing expectedSha256)
-  const missingHash = schema.safeParse({
+  // 5. Overwrite with missing expectedSha256 is strictly rejected
+  const missingHash = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
     path: "test.txt",
     mode: "overwrite",
     content: "hello",
   });
   assert.equal(missingHash.success, false);
 
-  // Invalid overwrite (uppercase hash)
-  const upperHash = schema.safeParse({
+  // 6. Overwrite with uppercase hash is strictly rejected
+  const upperHash = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
     path: "test.txt",
     mode: "overwrite",
     content: "hello",
@@ -948,14 +947,26 @@ test("write_text_file — Public Zod Schema validation contracts (create vs over
   });
   assert.equal(upperHash.success, false);
 
-  // Invalid overwrite (wrong length)
-  const wrongLenHash = schema.safeParse({
+  // 7. Overwrite with non-hex/wrong-length hash is strictly rejected
+  const nonHexHash = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
     path: "test.txt",
     mode: "overwrite",
     content: "hello",
-    expectedSha256: "0123456789abcdef",
+    expectedSha256: "0123456789abcdef_non_hex_or_too_short",
   });
-  assert.equal(wrongLenHash.success, false);
+  assert.equal(nonHexHash.success, false);
+
+  // 8. Overwrite with arbitrary unknown property is strictly rejected
+  const overwriteWithUnknown = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
+    path: "test.txt",
+    mode: "overwrite",
+    content: "hello",
+    expectedSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    unknownProp: "arbitrary",
+  });
+  assert.equal(overwriteWithUnknown.success, false);
 });
 
 test("MCP Tool Handlers — write_text_file and edit_text_file registration and execution", async () => {
