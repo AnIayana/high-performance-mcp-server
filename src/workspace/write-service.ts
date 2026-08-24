@@ -36,6 +36,8 @@ export function createWorkspaceOperatorPolicy(
   });
 }
 
+export type WriteMode = "create" | "overwrite";
+
 export interface ResolvedWritePathResult {
   readonly targetPath: string;
   readonly relativeToRoot: string;
@@ -47,8 +49,8 @@ export interface ResolvedWritePathResult {
 export interface WriteTextFileInput {
   rootId?: string;
   path: string;
+  mode: WriteMode;
   content: string;
-  create?: boolean;
   expectedSha256?: string;
   operatorPolicy?: WorkspaceOperatorPolicy;
 }
@@ -56,7 +58,7 @@ export interface WriteTextFileInput {
 export interface WriteTextFileResult {
   rootId: string;
   path: string;
-  created: boolean;
+  mode: WriteMode;
   bytesWritten: number;
   sha256: string;
   previousSha256?: string;
@@ -86,15 +88,27 @@ export interface EditTextFileResult {
 }
 
 /**
- * Helper hook for injecting test race conditions immediately prior to atomic file rename.
+ * Helper hook for injecting test race conditions immediately prior to atomic file publication/rename.
  * Used exclusively by deterministic concurrency test suites.
  */
-let preRenameHookForTesting: ((targetPath: string) => Promise<void>) | undefined;
+let prePublicationHookForTesting: ((targetPath: string) => Promise<void>) | undefined;
 
 export function _setPreRenameHookForTesting(
   hook?: (targetPath: string) => Promise<void>
 ): void {
-  preRenameHookForTesting = hook;
+  prePublicationHookForTesting = hook;
+}
+
+/**
+ * Helper hook for injecting simulated failure during final atomic replacement.
+ * Used exclusively by atomicity failure test suites.
+ */
+let publicationFailureHookForTesting: (() => Promise<void>) | undefined;
+
+export function _setPublicationFailureHookForTesting(
+  hook?: () => Promise<void>
+): void {
+  publicationFailureHookForTesting = hook;
 }
 
 /**
@@ -126,6 +140,31 @@ function resolveRoot(workspaceConfig: WorkspaceConfig | undefined, rootId?: stri
     "invalid_path",
     `Multiple workspace roots configured (${workspaceConfig.roots.map((r) => r.id).join(", ")}). rootId parameter is required.`
   );
+}
+
+/**
+ * Creates a unique temporary file exclusively (O_CREAT | O_EXCL | O_WRONLY) in the specified directory.
+ * Retries on collision with fresh UUIDs.
+ */
+async function createExclusiveTempFile(
+  dir: string,
+  mode: number = 0o600
+): Promise<{ handle: fs.FileHandle; tempPath: string }> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const tempFileName = `.mcp-temp-${crypto.randomUUID()}.tmp`;
+    const tempPath = path.join(dir, tempFileName);
+    try {
+      // 'wx' flag opens for writing with O_CREAT | O_EXCL
+      const handle = await fs.open(tempPath, "wx", mode);
+      return { handle, tempPath };
+    } catch (err: any) {
+      if (err.code === "EEXIST") {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new WorkspaceSecurityError("workspace_error", "Failed to allocate exclusive temporary file after multiple attempts.");
 }
 
 /**
@@ -251,7 +290,7 @@ export async function resolveWritePathWithinRoot(
   if (!lstatResult) {
     throw new WorkspaceSecurityError(
       "not_found",
-      `File does not exist: "${relativePath}" within root "${root.name}". Set create: true to create a new file.`
+      `File does not exist: "${relativePath}" within root "${root.name}". Use mode "create" to create a new file.`
     );
   }
 
@@ -317,7 +356,15 @@ export async function writeTextFileService(
   workspaceConfig: WorkspaceConfig | undefined,
   input: WriteTextFileInput
 ): Promise<WriteTextFileResult> {
-  const isCreate = input.create === true;
+  const mode = input.mode;
+  if (mode !== "create" && mode !== "overwrite") {
+    throw new WorkspaceSecurityError(
+      "invalid_path",
+      `Invalid mode "${String(mode)}". Must be either "create" or "overwrite".`
+    );
+  }
+
+  const isCreate = mode === "create";
   const content = input.content;
 
   if (typeof content !== "string") {
@@ -327,6 +374,31 @@ export async function writeTextFileService(
   // Strict NUL rejection
   if (content.includes("\0")) {
     throw new WorkspaceSecurityError("invalid_text_encoding", "File content cannot contain NUL bytes.");
+  }
+
+  // Validate expectedSha256 rules
+  if (isCreate) {
+    if (input.expectedSha256 !== undefined && input.expectedSha256.trim().length > 0) {
+      throw new WorkspaceSecurityError(
+        "invalid_path",
+        "expectedSha256 is forbidden when mode is 'create'."
+      );
+    }
+  } else {
+    // Mode is overwrite
+    if (typeof input.expectedSha256 !== "string" || input.expectedSha256.trim().length === 0) {
+      throw new WorkspaceSecurityError(
+        "missing_expected_hash",
+        `expectedSha256 is required when mode is "overwrite" for file "${input.path}".`
+      );
+    }
+
+    if (!SHA256_HEX_REGEX.test(input.expectedSha256)) {
+      throw new WorkspaceSecurityError(
+        "invalid_hash",
+        `Invalid expectedSha256 format for "${input.path}": expected 64-character lowercase hex string.`
+      );
+    }
   }
 
   const effectiveMaxBytes = Math.min(
@@ -350,17 +422,10 @@ export async function writeTextFileService(
   );
 
   let previousSha256: string | undefined;
+  let fileMode = 0o644;
 
   if (!isCreate) {
-    // Existing file overwrite: expectedSha256 is strictly required
-    if (typeof input.expectedSha256 !== "string" || !SHA256_HEX_REGEX.test(input.expectedSha256.trim())) {
-      throw new WorkspaceSecurityError(
-        "content_conflict",
-        `expectedSha256 is required when overwriting existing file "${input.path}". Expected 64-character lowercase hex string.`
-      );
-    }
-
-    const expectedSha256 = input.expectedSha256.trim();
+    const expectedSha256 = input.expectedSha256!;
 
     // Read current file content to verify expected SHA-256
     const currentBytes = await fs.readFile(resolved.targetPath);
@@ -372,18 +437,18 @@ export async function writeTextFileService(
         `Content conflict for "${input.path}": current SHA-256 (${previousSha256}) does not match expected SHA-256 (${expectedSha256}).`
       );
     }
+
+    // Preserve existing POSIX permissions where available
+    if (resolved.stats) {
+      fileMode = resolved.stats.mode & 0o777;
+    }
   }
 
-  // Atomic replacement strategy: write to temporary file in the same directory
   const targetDir = path.dirname(resolved.targetPath);
-  const tempFileName = `.mcp-temp-${crypto.randomUUID()}.tmp`;
-  const tempFilePath = path.join(targetDir, tempFileName);
-
-  let tempFileCreated = false;
+  const { handle, tempPath: tempFilePath } = await createExclusiveTempFile(targetDir, fileMode);
+  let tempFileCreated = true;
 
   try {
-    const handle = await fs.open(tempFilePath, "w", 0o600);
-    tempFileCreated = true;
     try {
       await handle.writeFile(contentBuffer);
       await handle.sync();
@@ -391,22 +456,28 @@ export async function writeTextFileService(
       await handle.close();
     }
 
-    // Injection seam for testing pre-rename race conditions
-    if (preRenameHookForTesting) {
-      await preRenameHookForTesting(resolved.targetPath);
+    // Injection seam for testing pre-publication race conditions
+    if (prePublicationHookForTesting) {
+      await prePublicationHookForTesting(resolved.targetPath);
     }
 
-    // Pre-rename revalidation to minimize race windows
-    if (!isCreate) {
-      const recheckedBytes = await fs.readFile(resolved.targetPath);
-      const recheckedSha = crypto.createHash("sha256").update(recheckedBytes).digest("hex");
-      if (recheckedSha !== previousSha256) {
-        throw new WorkspaceSecurityError(
-          "content_conflict",
-          `Content conflict: Target file "${input.path}" was modified concurrently prior to commit.`
-        );
-      }
-    } else {
+    // Injection seam for testing publication failure
+    if (publicationFailureHookForTesting) {
+      await publicationFailureHookForTesting();
+    }
+
+    // Pre-publication revalidations to minimize race windows
+    // 1. Revalidate canonical parent directory containment
+    const realParent = await fs.realpath(targetDir);
+    if (!isContainedWithinRoot(resolved.root.realPath, realParent)) {
+      throw new WorkspaceSecurityError(
+        "access_denied",
+        `Access denied: Parent directory escaped root boundary prior to commit.`
+      );
+    }
+
+    if (isCreate) {
+      // 2. For create: verify target still does not exist
       let targetExists = false;
       try {
         await fs.lstat(resolved.targetPath);
@@ -420,27 +491,80 @@ export async function writeTextFileService(
           `File "${input.path}" was created concurrently prior to commit.`
         );
       }
-    }
 
-    // Revalidate canonical parent directory containment
-    const realParent = await fs.realpath(targetDir);
-    if (!isContainedWithinRoot(resolved.root.realPath, realParent)) {
-      throw new WorkspaceSecurityError(
-        "access_denied",
-        `Access denied: Parent directory escaped root boundary prior to commit.`
-      );
-    }
+      // 3. Atomic No-Clobber Publication using fs.link
+      try {
+        await fs.link(tempFilePath, resolved.targetPath);
+        // Successfully linked without clobbering; clean up temp hardlink
+        await fs.unlink(tempFilePath);
+        tempFileCreated = false;
+      } catch (linkErr: any) {
+        if (linkErr.code === "EEXIST" || linkErr.code === "EPERM") {
+          throw new WorkspaceSecurityError(
+            "already_exists",
+            `File already exists: "${input.path}" within root "${resolved.root.name}".`
+          );
+        }
+        // If filesystem does not support hard links, fallback to verified atomic rename
+        if (linkErr.code === "ENOSYS" || linkErr.code === "EXDEV") {
+          let recheckExists = false;
+          try {
+            await fs.lstat(resolved.targetPath);
+            recheckExists = true;
+          } catch {
+            recheckExists = false;
+          }
+          if (recheckExists) {
+            throw new WorkspaceSecurityError(
+              "already_exists",
+              `File already exists: "${input.path}" within root "${resolved.root.name}".`
+            );
+          }
+          await fs.rename(tempFilePath, resolved.targetPath);
+          tempFileCreated = false;
+        } else {
+          throw linkErr;
+        }
+      }
+    } else {
+      // For overwrite: verify target is still regular file and hash still matches
+      let targetStats: Stats;
+      try {
+        targetStats = await fs.lstat(resolved.targetPath);
+      } catch {
+        throw new WorkspaceSecurityError(
+          "not_found",
+          `Target file "${input.path}" was deleted concurrently prior to commit.`
+        );
+      }
 
-    // Atomically rename temp file over target file
-    await fs.rename(tempFilePath, resolved.targetPath);
-    tempFileCreated = false;
+      if (!targetStats.isFile()) {
+        throw new WorkspaceSecurityError(
+          "unsupported_file_type",
+          `Target "${input.path}" is no longer a regular file prior to commit.`
+        );
+      }
+
+      const recheckedBytes = await fs.readFile(resolved.targetPath);
+      const recheckedSha = crypto.createHash("sha256").update(recheckedBytes).digest("hex");
+      if (recheckedSha !== previousSha256) {
+        throw new WorkspaceSecurityError(
+          "content_conflict",
+          `Content conflict: Target file "${input.path}" was modified concurrently prior to commit.`
+        );
+      }
+
+      // Atomically replace target file
+      await fs.rename(tempFilePath, resolved.targetPath);
+      tempFileCreated = false;
+    }
 
     const newSha256 = crypto.createHash("sha256").update(contentBuffer).digest("hex");
 
     return {
       rootId: resolved.root.id,
       path: resolved.relativeToRoot,
-      created: isCreate,
+      mode,
       bytesWritten: contentBuffer.byteLength,
       sha256: newSha256,
       previousSha256,
@@ -460,7 +584,7 @@ export async function writeTextFileService(
 /**
  * Counts non-overlapping literal occurrences of search string within text.
  */
-function countLiteralOccurrences(text: string, search: string): number {
+export function countNonOverlappingOccurrences(text: string, search: string): number {
   if (search.length === 0) return 0;
   let count = 0;
   let pos = 0;
@@ -482,14 +606,21 @@ export async function editTextFileService(
     throw new WorkspaceSecurityError("invalid_path", "Edits array must contain at least one edit instruction.");
   }
 
-  if (typeof input.expectedSha256 !== "string" || !SHA256_HEX_REGEX.test(input.expectedSha256.trim())) {
+  if (typeof input.expectedSha256 !== "string" || input.expectedSha256.trim().length === 0) {
     throw new WorkspaceSecurityError(
-      "content_conflict",
-      `expectedSha256 is required for edit_text_file. Expected 64-character lowercase hex string.`
+      "missing_expected_hash",
+      `expectedSha256 is required for edit_text_file.`
     );
   }
 
-  const expectedSha256 = input.expectedSha256.trim();
+  if (!SHA256_HEX_REGEX.test(input.expectedSha256)) {
+    throw new WorkspaceSecurityError(
+      "invalid_hash",
+      `Invalid expectedSha256 format for "${input.path}": expected 64-character lowercase hex string.`
+    );
+  }
+
+  const expectedSha256 = input.expectedSha256;
 
   // Validate each edit item
   for (let i = 0; i < input.edits.length; i++) {
@@ -535,10 +666,10 @@ export async function editTextFileService(
     false // Not create, must be existing regular file
   );
 
-  if (resolved.stats && resolved.stats.size > HARD_MAX_WRITE_BYTES) {
+  if (resolved.stats && resolved.stats.size > effectiveMaxBytes) {
     throw new WorkspaceSecurityError(
       "write_too_large",
-      `Target file size (${resolved.stats.size} bytes) exceeds maximum editable size (${HARD_MAX_WRITE_BYTES} bytes).`
+      `Target file size (${resolved.stats.size} bytes) exceeds maximum editable size (${effectiveMaxBytes} bytes).`
     );
   }
 
@@ -553,10 +684,10 @@ export async function editTextFileService(
     );
   }
 
-  // Strict fatal UTF-8 decoding
+  // Strict fatal UTF-8 decoding with BOM preservation
   let currentText: string;
   try {
-    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
     currentText = decoder.decode(currentBytes);
   } catch {
     throw new WorkspaceSecurityError(
@@ -565,21 +696,37 @@ export async function editTextFileService(
     );
   }
 
+  // Reject files with embedded NUL bytes
+  if (currentText.includes("\0")) {
+    throw new WorkspaceSecurityError(
+      "invalid_text_encoding",
+      `Target file "${input.path}" contains NUL bytes.`
+    );
+  }
+
   // Apply edits sequentially in memory (transactional evaluation)
   for (let i = 0; i < input.edits.length; i++) {
     const edit = input.edits[i];
     const expectedCount = edit.expectedOccurrences ?? 1;
-    const actualCount = countLiteralOccurrences(currentText, edit.oldText);
+    const actualCount = countNonOverlappingOccurrences(currentText, edit.oldText);
 
     if (actualCount !== expectedCount) {
       throw new WorkspaceSecurityError(
         "occurrence_mismatch",
-        `Edit[${i}] failed: expected ${expectedCount} occurrence(s) of "${edit.oldText.slice(0, 40)}", but found ${actualCount}.`
+        `Edit[${i}] failed: expected ${expectedCount} non-overlapping occurrence(s) of "${edit.oldText.slice(0, 40)}", but found ${actualCount}.`
       );
     }
 
     // Exact literal replacement using replacer function to prevent $ replacement pattern expansion
     currentText = currentText.replaceAll(edit.oldText, () => edit.newText);
+  }
+
+  // Reject resulting text containing NUL bytes
+  if (currentText.includes("\0")) {
+    throw new WorkspaceSecurityError(
+      "invalid_text_encoding",
+      `Resulting text for "${input.path}" contains NUL bytes.`
+    );
   }
 
   const newBytes = Buffer.from(currentText, "utf8");
@@ -590,16 +737,15 @@ export async function editTextFileService(
     );
   }
 
+  // Capture mode for preservation
+  const fileMode = resolved.stats ? (resolved.stats.mode & 0o777) : 0o644;
+
   // Atomic replacement
   const targetDir = path.dirname(resolved.targetPath);
-  const tempFileName = `.mcp-temp-${crypto.randomUUID()}.tmp`;
-  const tempFilePath = path.join(targetDir, tempFileName);
-
-  let tempFileCreated = false;
+  const { handle, tempPath: tempFilePath } = await createExclusiveTempFile(targetDir, fileMode);
+  let tempFileCreated = true;
 
   try {
-    const handle = await fs.open(tempFilePath, "w", 0o600);
-    tempFileCreated = true;
     try {
       await handle.writeFile(newBytes);
       await handle.sync();
@@ -607,25 +753,46 @@ export async function editTextFileService(
       await handle.close();
     }
 
-    if (preRenameHookForTesting) {
-      await preRenameHookForTesting(resolved.targetPath);
+    if (prePublicationHookForTesting) {
+      await prePublicationHookForTesting(resolved.targetPath);
+    }
+
+    if (publicationFailureHookForTesting) {
+      await publicationFailureHookForTesting();
     }
 
     // Pre-rename revalidation
+    const realParent = await fs.realpath(targetDir);
+    if (!isContainedWithinRoot(resolved.root.realPath, realParent)) {
+      throw new WorkspaceSecurityError(
+        "access_denied",
+        `Access denied: Parent directory escaped root boundary prior to commit.`
+      );
+    }
+
+    let targetStats: Stats;
+    try {
+      targetStats = await fs.lstat(resolved.targetPath);
+    } catch {
+      throw new WorkspaceSecurityError(
+        "not_found",
+        `Target file "${input.path}" was deleted concurrently prior to commit.`
+      );
+    }
+
+    if (!targetStats.isFile()) {
+      throw new WorkspaceSecurityError(
+        "unsupported_file_type",
+        `Target "${input.path}" is no longer a regular file prior to commit.`
+      );
+    }
+
     const recheckedBytes = await fs.readFile(resolved.targetPath);
     const recheckedSha = crypto.createHash("sha256").update(recheckedBytes).digest("hex");
     if (recheckedSha !== previousSha256) {
       throw new WorkspaceSecurityError(
         "content_conflict",
         `Content conflict: Target file "${input.path}" was modified concurrently prior to commit.`
-      );
-    }
-
-    const realParent = await fs.realpath(targetDir);
-    if (!isContainedWithinRoot(resolved.root.realPath, realParent)) {
-      throw new WorkspaceSecurityError(
-        "access_denied",
-        `Access denied: Parent directory escaped root boundary prior to commit.`
       );
     }
 

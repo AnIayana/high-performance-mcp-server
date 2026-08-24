@@ -193,10 +193,13 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
 
 ### Mutation Tools
 
+> [!WARNING]
+> When running with `--profile=all` or `--profile=workspace_write`, connected clients and LLMs have guarded text write and edit capabilities within configured `--root` directories. The standard `--profile=workspace` remains strictly read-only.
+
 1. **`write_text_file`**:
-   - **Create New File** (`create: true`): Creates a new UTF-8 text file inside an allowlisted workspace root. Fails if the file already exists (`already_exists`) or if the parent directory does not exist (`missing_parent`).
-   - **Overwrite Existing File** (`create: false`, default): Requires `expectedSha256` matching the file's current SHA-256 hash. If the file was modified concurrently, throws `content_conflict` and aborts without touching the file.
-   - **Atomic Writes**: Writes to a temporary file (`.mcp-temp-<uuid>.tmp`) in the same directory, flushes to disk (`fsync`), re-validates the target hash to eliminate race conditions, and atomically renames over the target.
+   - **Create Mode** (`mode: "create"`): Creates a new UTF-8 text file inside an allowlisted workspace root. Enforces atomic no-clobber semantics via `fs.link` (or equivalent no-clobber publishing); fails safely if the file already exists (`already_exists`) or if the parent directory does not exist (`missing_parent`). Providing `expectedSha256` in create mode is forbidden.
+   - **Overwrite Mode** (`mode: "overwrite"`): Strictly requires `expectedSha256` (64-character lowercase hex) matching the file's current SHA-256 hash. If the file was modified concurrently, throws `content_conflict` and aborts without touching the target file.
+   - **Exclusive Temp & Atomic Replacement**: Creates an exclusive temporary file (`.mcp-temp-<uuid>.tmp`) in the target directory (`O_CREAT | O_EXCL`), flushes to disk (`fsync`), re-validates the target file type and hash, and atomically replaces the destination.
 
    ```json
    {
@@ -204,6 +207,7 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
      "arguments": {
        "rootId": "root-1",
        "path": "src/config.json",
+       "mode": "overwrite",
        "content": "{\n  \"version\": 2\n}\n",
        "expectedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
      }
@@ -211,9 +215,10 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
    ```
 
 2. **`edit_text_file`**:
-   - **Exact Literal Replacement**: Performs targeted, sequential in-memory text replacements without regex or special token expansion (e.g. `$$`, `$1`, `$&` are inserted verbatim).
+   - **Exact Literal Replacement**: Performs targeted, sequential in-memory text replacements without regex or special token expansion (e.g. `$$`, `$1`, `$&`, `$\``, `$'` are inserted verbatim).
+   - **Non-Overlapping Occurrence Guarantees**: Evaluates `expectedOccurrences` (default: 1) using non-overlapping literal matching matching the exact replacement semantics.
    - **Transactional Execution**: Applies all edits sequentially in memory. If any edit fails its `expectedOccurrences` check or if the file hash mismatches `expectedSha256`, the operation aborts and the disk file remains 100% untouched.
-   - **Strict UTF-8**: Non-UTF-8 binary files are rejected (`invalid_text_encoding`).
+   - **Strict UTF-8 & BOM Preservation**: Non-UTF-8 binary files are rejected (`invalid_text_encoding`). Existing UTF-8 BOM headers and CRLF line endings are preserved with byte-for-byte fidelity.
 
    ```json
    {
@@ -238,6 +243,11 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
 Server operators can set strict hard caps on the maximum allowed write or edit payload size in bytes:
 - CLI flag: `--workspace-max-write-bytes=<bytes>` (1 to 5,242,880 bytes / 5 MiB, default: `1048576` / 1 MiB)
 - Environment variable: `MCP_WORKSPACE_MAX_WRITE_BYTES=<bytes>`
+
+### Metadata & Concurrency Considerations
+
+- **Atomic Replacement Metadata**: Atomic replacement creates a new filesystem entry, preserving POSIX permission bits (`0755`, `0644`) where supported. Other OS-specific metadata (e.g. inode number, creation timestamp `ctime`, ACL inheritance) may not be portably preserved.
+- **Residual Concurrency Boundaries**: Pre-replace revalidation minimizes TOCTOU race conditions against untrusted MCP callers. However, a hostile local OS process with equivalent filesystem privileges executing concurrent writes in the microseconds after final validation may still race path-based operations.
 
 ---
 

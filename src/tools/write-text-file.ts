@@ -24,21 +24,19 @@ export default function registerWriteTextFileTool(
       inputSchema: z.object({
         rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
         path: z.string().min(1).describe("Relative file path within the root"),
+        mode: z
+          .enum(["create", "overwrite"])
+          .describe("Write mode: 'create' for new files only (fails if exists), or 'overwrite' for existing files (requires expectedSha256)"),
         content: z.string().describe("UTF-8 text content to write"),
-        create: z
-          .boolean()
-          .optional()
-          .default(false)
-          .describe("Set to true to create a new file; false (default) to overwrite an existing file"),
         expectedSha256: z
           .string()
           .optional()
-          .describe("Expected 64-character lowercase hex SHA-256 of current file (required when create is false)"),
+          .describe("Expected 64-character lowercase hex SHA-256 of current file (required when mode is 'overwrite'; forbidden when mode is 'create')"),
       }),
       outputSchema: z.object({
         rootId: z.string(),
         path: z.string(),
-        created: z.boolean(),
+        mode: z.enum(["create", "overwrite"]),
         bytesWritten: z.number(),
         sha256: z.string(),
         previousSha256: z.string().optional(),
@@ -49,8 +47,8 @@ export default function registerWriteTextFileTool(
         const result = await writeTextFileService(context?.workspace, {
           rootId: args.rootId,
           path: args.path,
+          mode: args.mode,
           content: args.content,
-          create: args.create,
           expectedSha256: args.expectedSha256,
           operatorPolicy: context?.workspacePolicy,
         });

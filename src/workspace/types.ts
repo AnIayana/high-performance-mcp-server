@@ -13,6 +13,8 @@ export type WorkspaceErrorCode =
   | "write_too_large"
   | "invalid_text_encoding"
   | "unsupported_file_type"
+  | "invalid_hash"
+  | "missing_expected_hash"
   | "write_not_enabled"
   | "workspace_error";
 
