@@ -8,6 +8,7 @@ import type { ToolMetadata } from "./types.js";
 import register_cache_stats, { toolMeta as meta_cache_stats } from "./cache-stats.js";
 import register_cached_prime_count, { toolMeta as meta_cached_prime_count } from "./cached-prime-count.js";
 import register_echo, { toolMeta as meta_echo } from "./echo.js";
+import register_edit_text_file, { toolMeta as meta_edit_text_file } from "./edit-text-file.js";
 import register_fetch_url, { toolMeta as meta_fetch_url } from "./fetch-url.js";
 import register_file_info, { toolMeta as meta_file_info } from "./file-info.js";
 import register_heavy_compute_main, { toolMeta as meta_heavy_compute_main } from "./heavy-compute-main.js";
@@ -23,6 +24,7 @@ import register_server_metrics, { toolMeta as meta_server_metrics } from "./serv
 import register_system_stats, { toolMeta as meta_system_stats } from "./system-stats.js";
 import register_worker_pool_stats, { toolMeta as meta_worker_pool_stats } from "./worker-pool-stats.js";
 import register_workspace_roots, { toolMeta as meta_workspace_roots } from "./workspace-roots.js";
+import register_write_text_file, { toolMeta as meta_write_text_file } from "./write-text-file.js";
 
 export type ToolRegistrar = (server: McpServer, context?: ServerContext) => void;
 
@@ -43,6 +45,10 @@ export const toolEntries: readonly ToolEntry[] = [
   {
     register: register_echo,
     meta: meta_echo,
+  },
+  {
+    register: register_edit_text_file,
+    meta: meta_edit_text_file,
   },
   {
     register: register_fetch_url,
@@ -103,5 +109,9 @@ export const toolEntries: readonly ToolEntry[] = [
   {
     register: register_workspace_roots,
     meta: meta_workspace_roots,
+  },
+  {
+    register: register_write_text_file,
+    meta: meta_write_text_file,
   },
 ];

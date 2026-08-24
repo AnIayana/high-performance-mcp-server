@@ -9,6 +9,7 @@ import {
   type NetworkCachePolicy,
 } from "./network/conditional-cache.js";
 import type { NetworkOperatorPolicy } from "./network/operator-policy.js";
+import type { WorkspaceOperatorPolicy } from "./workspace/write-service.js";
 import { registerPrompts } from "./prompts/index.js";
 import { registerResources } from "./resources/index.js";
 import { registerTools } from "./tools/index.js";
@@ -16,6 +17,7 @@ import { registerTools } from "./tools/index.js";
 export interface CreateServerOptions {
   profile?: ToolProfile;
   workspaceConfig?: WorkspaceConfig;
+  workspacePolicy?: WorkspaceOperatorPolicy;
   networkPolicy?: NetworkOperatorPolicy;
   networkCachePolicy?: NetworkCachePolicy;
 }
@@ -28,6 +30,7 @@ export interface CreateServerOptions {
 export function createServer(options?: CreateServerOptions): McpServer {
   const profile = options?.profile ?? DEFAULT_TOOL_PROFILE;
   const workspace = options?.workspaceConfig;
+  const workspacePolicy = options?.workspacePolicy;
   const networkPolicy = options?.networkPolicy;
   const networkCachePolicy = options?.networkCachePolicy;
   const networkCache = networkCachePolicy?.enabled
@@ -47,6 +50,7 @@ export function createServer(options?: CreateServerOptions): McpServer {
   const context: ServerContext = {
     profile,
     workspace,
+    workspacePolicy,
     networkPolicy,
     networkCachePolicy,
     networkCache,

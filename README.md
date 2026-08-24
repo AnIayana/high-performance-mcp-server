@@ -91,11 +91,12 @@ To protect host machines and prevent unintended resource consumption or metadata
 | :--- | :--- | :--- | :--- | :--- |
 | **`safe`** *(Default)* | `safe` | `echo`, `ping` | *(none)* | Zero host inspection, zero filesystem access, zero mutation. Safe for public exposure. |
 | **`workspace`** | `safe`, `workspace` | `echo`, `ping`, `workspace_roots`, `list_directory`, `file_info`, `read_text_file`, `search_files`, `search_text` | `explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol` | Read-only file and directory inspection strictly limited to allowlisted `--root` directories. |
+| **`workspace_write`** | `safe`, `workspace`, `workspace_write` | `echo`, `ping`, `workspace_roots`, `list_directory`, `file_info`, `read_text_file`, `search_files`, `search_text`, `write_text_file`, `edit_text_file` | `explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol` | Guarded workspace text file creation, overwriting, and transactional editing with optimistic concurrency. |
 | **`network`** | `safe`, `network` | `echo`, `ping`, `fetch_url` | *(none)* | SSRF-hardened, read-only HTTP/HTTPS web fetching for public resources. |
 | **`diagnostics`** | `safe`, `diagnostics` | `echo`, `ping`, `cache_stats`, `server_metrics`, `system_stats`, `worker_pool_stats` | *(none)* | Process and system observability for monitoring health and event-loop lag. |
 | **`benchmark`** | `safe`, `benchmark` | `echo`, `ping`, `cached_prime_count`, `heavy_compute_main`, `heavy_compute_worker` | *(none)* | CPU-intensive prime calculation benchmarks and worker pool tests. |
 | **`admin`** | `safe`, `diagnostics`, `admin` | `echo`, `ping`, `cache_stats`, `server_metrics`, `system_stats`, `worker_pool_stats`, `reset_cache`, `reset_metrics` | *(none)* | Observability with administrative runtime state mutation (purging cache, resetting metrics). |
-| **`all`** | `safe`, `workspace`, `network`, `diagnostics`, `benchmark`, `admin` | All 18 registered tools | All 4 workspace prompts | Complete tool and prompt catalog. |
+| **`all`** | `safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin` | All 20 registered tools | All 4 workspace prompts | Complete tool and prompt catalog. |
 
 ---
 
@@ -178,6 +179,65 @@ The `workspace` profile provides bounded, read-only search tools:
    - Automatically skips binary files (NUL bytes) and files larger than 1 MiB (`MAX_SEARCH_FILE_BYTES`).
    - Limits: Hard defaults (`maxResults: 100` [max 500], `maxFiles: 5000` [max 50000], `timeoutMs: 10000` [max 30000]).
    - Fully cancellable via client `AbortSignal`.
+
+---
+
+## Guarded Workspace Text Write & Edit (`workspace_write`)
+
+Workspace mutation is **disabled by default**. The standard `workspace` profile remains strictly read-only. To enable guarded text write and transactional editing capabilities, explicitly select the **`workspace_write`** profile (or `all`) along with at least one allowlisted `--root`:
+
+```bash
+# Start server with workspace write capabilities
+npx high-performance-mcp-server --profile=workspace_write --root=./project --workspace-max-write-bytes=2097152
+```
+
+### Mutation Tools
+
+1. **`write_text_file`**:
+   - **Create New File** (`create: true`): Creates a new UTF-8 text file inside an allowlisted workspace root. Fails if the file already exists (`already_exists`) or if the parent directory does not exist (`missing_parent`).
+   - **Overwrite Existing File** (`create: false`, default): Requires `expectedSha256` matching the file's current SHA-256 hash. If the file was modified concurrently, throws `content_conflict` and aborts without touching the file.
+   - **Atomic Writes**: Writes to a temporary file (`.mcp-temp-<uuid>.tmp`) in the same directory, flushes to disk (`fsync`), re-validates the target hash to eliminate race conditions, and atomically renames over the target.
+
+   ```json
+   {
+     "name": "write_text_file",
+     "arguments": {
+       "rootId": "root-1",
+       "path": "src/config.json",
+       "content": "{\n  \"version\": 2\n}\n",
+       "expectedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+     }
+   }
+   ```
+
+2. **`edit_text_file`**:
+   - **Exact Literal Replacement**: Performs targeted, sequential in-memory text replacements without regex or special token expansion (e.g. `$$`, `$1`, `$&` are inserted verbatim).
+   - **Transactional Execution**: Applies all edits sequentially in memory. If any edit fails its `expectedOccurrences` check or if the file hash mismatches `expectedSha256`, the operation aborts and the disk file remains 100% untouched.
+   - **Strict UTF-8**: Non-UTF-8 binary files are rejected (`invalid_text_encoding`).
+
+   ```json
+   {
+     "name": "edit_text_file",
+     "arguments": {
+       "rootId": "root-1",
+       "path": "src/index.ts",
+       "expectedSha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+       "edits": [
+         {
+           "oldText": "const PORT = 3000;",
+           "newText": "const PORT = 8080;",
+           "expectedOccurrences": 1
+         }
+       ]
+     }
+   }
+   ```
+
+### Operator-Configurable Write Limits
+
+Server operators can set strict hard caps on the maximum allowed write or edit payload size in bytes:
+- CLI flag: `--workspace-max-write-bytes=<bytes>` (1 to 5,242,880 bytes / 5 MiB, default: `1048576` / 1 MiB)
+- Environment variable: `MCP_WORKSPACE_MAX_WRITE_BYTES=<bytes>`
 
 ---
 

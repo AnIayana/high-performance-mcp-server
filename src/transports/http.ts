@@ -10,6 +10,7 @@ import { DEFAULT_TOOL_PROFILE, type ToolProfile } from "../config/tool-profile.j
 import type { WorkspaceConfig } from "../config/workspace.js";
 import type { NetworkCachePolicy } from "../network/conditional-cache.js";
 import type { NetworkOperatorPolicy } from "../network/operator-policy.js";
+import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
 import { createServer } from "../server.js";
 import { closeWorkerPool } from "../workers/pool.js";
 
@@ -28,10 +29,17 @@ export async function createHttpTransportServer(
   profile: ToolProfile = DEFAULT_TOOL_PROFILE,
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
-  networkCachePolicy?: NetworkCachePolicy
+  networkCachePolicy?: NetworkCachePolicy,
+  workspacePolicy?: WorkspaceOperatorPolicy
 ): Promise<HttpTransportServerInstance> {
   const handler = createMcpHandler(() =>
-    createServer({ profile, workspaceConfig, networkPolicy, networkCachePolicy })
+    createServer({
+      profile,
+      workspaceConfig,
+      workspacePolicy,
+      networkPolicy,
+      networkCachePolicy,
+    })
   );
   const nodeHandler = toNodeHandler(handler);
 
@@ -59,23 +67,24 @@ export async function createHttpTransportServer(
     void nodeHandler(req, res);
   });
 
-  const close = async (): Promise<void> => {
-    await new Promise<void>((resolve, reject) => {
-      httpServer.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-    await closeWorkerPool();
-    await handler.close();
-  };
-
   return new Promise((resolve, reject) => {
     httpServer.listen(port, "127.0.0.1", () => {
-      const addr = httpServer.address();
-      if (addr && typeof addr === "object") {
-        assignedPort = addr.port;
+      const address = httpServer.address();
+      if (address && typeof address === "object") {
+        assignedPort = address.port;
       }
+
+      const close = async (): Promise<void> => {
+        await new Promise<void>((res, rej) => {
+          httpServer.close((err) => {
+            if (err) rej(err);
+            else res();
+          });
+        });
+        await closeWorkerPool();
+        await handler.close();
+      };
+
       resolve({
         server: httpServer,
         port: assignedPort,
@@ -98,14 +107,16 @@ export async function startHttpTransport(
   profile: ToolProfile = DEFAULT_TOOL_PROFILE,
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
-  networkCachePolicy?: NetworkCachePolicy
+  networkCachePolicy?: NetworkCachePolicy,
+  workspacePolicy?: WorkspaceOperatorPolicy
 ): Promise<void> {
   const instance = await createHttpTransportServer(
     port,
     profile,
     workspaceConfig,
     networkPolicy,
-    networkCachePolicy
+    networkCachePolicy,
+    workspacePolicy
   );
   console.error(`[MCP HTTP] Listening on http://127.0.0.1:${instance.port}/mcp (profile: ${profile})`);
 

@@ -424,4 +424,49 @@ test("CLI Parser — invalid network conditional cache options fail fast", () =>
   assert.ok(dupCache.error?.includes('Duplicate option specified: "--network-cache"'));
 });
 
+test("CLI Parser — workspace write operator policy CLI flags and environment variables", () => {
+  // Default workspace policy
+  const defaultCfg = parseCliArgs([], {});
+  assert.equal(defaultCfg.workspacePolicy.maxWriteBytes, 1048576);
+
+  // CLI flag parsing
+  const cliCfg = parseCliArgs(["--workspace-max-write-bytes=2097152"], {});
+  assert.equal(cliCfg.workspacePolicy.maxWriteBytes, 2097152);
+
+  // Space-separated CLI flag parsing
+  const spaceCfg = parseCliArgs(["--workspace-max-write-bytes", "3145728"], {});
+  assert.equal(spaceCfg.workspacePolicy.maxWriteBytes, 3145728);
+
+  // Environment variable parsing
+  const envCfg = parseCliArgs([], { MCP_WORKSPACE_MAX_WRITE_BYTES: "524288" });
+  assert.equal(envCfg.workspacePolicy.maxWriteBytes, 524288);
+
+  // CLI flag overrides environment variable
+  const overrideCfg = parseCliArgs(["--workspace-max-write-bytes=100000"], {
+    MCP_WORKSPACE_MAX_WRITE_BYTES: "500000",
+  });
+  assert.equal(overrideCfg.workspacePolicy.maxWriteBytes, 100000);
+
+  // Invalid CLI flags fail fast
+  const zeroWrite = parseCliArgs(["--workspace-max-write-bytes=0"], {});
+  assert.ok(zeroWrite.error?.includes("Invalid --workspace-max-write-bytes"));
+
+  const highWrite = parseCliArgs(["--workspace-max-write-bytes=99999999"], {});
+  assert.ok(highWrite.error?.includes("Invalid --workspace-max-write-bytes"));
+
+  const nonIntWrite = parseCliArgs(["--workspace-max-write-bytes=abc"], {});
+  assert.ok(nonIntWrite.error?.includes("Invalid --workspace-max-write-bytes"));
+
+  // Duplicate CLI flag fails fast
+  const dupWrite = parseCliArgs(
+    ["--workspace-max-write-bytes=1024", "--workspace-max-write-bytes=2048"],
+    {}
+  );
+  assert.ok(dupWrite.error?.includes('Duplicate option specified: "--workspace-max-write-bytes"'));
+
+  // Invalid environment variable fails fast
+  const invalidEnvWrite = parseCliArgs([], { MCP_WORKSPACE_MAX_WRITE_BYTES: "not-an-int" });
+  assert.ok(invalidEnvWrite.error?.includes("Invalid MCP_WORKSPACE_MAX_WRITE_BYTES"));
+});
+
 
