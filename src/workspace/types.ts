@@ -4,6 +4,7 @@
 
 export type WorkspaceErrorCode =
   | "invalid_path"
+  | "invalid_input"
   | "access_denied"
   | "not_found"
   | "missing_parent"

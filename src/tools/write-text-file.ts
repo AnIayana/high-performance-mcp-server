@@ -21,18 +21,24 @@ export default function registerWriteTextFileTool(
     {
       title: "Write Text File",
       description: toolMeta.description,
-      inputSchema: z.object({
-        rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
-        path: z.string().min(1).describe("Relative file path within the root"),
-        mode: z
-          .enum(["create", "overwrite"])
-          .describe("Write mode: 'create' for new files only (fails if exists), or 'overwrite' for existing files (requires expectedSha256)"),
-        content: z.string().describe("UTF-8 text content to write"),
-        expectedSha256: z
-          .string()
-          .optional()
-          .describe("Expected 64-character lowercase hex SHA-256 of current file (required when mode is 'overwrite'; forbidden when mode is 'create')"),
-      }),
+      inputSchema: z.discriminatedUnion("mode", [
+        z.object({
+          rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
+          path: z.string().min(1).describe("Relative file path within the root"),
+          mode: z.literal("create").describe("Write mode: create a new file only (fails if file already exists)"),
+          content: z.string().describe("UTF-8 text content to write"),
+        }),
+        z.object({
+          rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
+          path: z.string().min(1).describe("Relative file path within the root"),
+          mode: z.literal("overwrite").describe("Write mode: atomically overwrite an existing file (requires expectedSha256)"),
+          content: z.string().describe("UTF-8 text content to write"),
+          expectedSha256: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/, "expectedSha256 must be a 64-character lowercase hex SHA-256 string")
+            .describe("Expected 64-character lowercase hex SHA-256 hash of the existing file"),
+        }),
+      ]),
       outputSchema: z.object({
         rootId: z.string(),
         path: z.string(),
@@ -49,7 +55,7 @@ export default function registerWriteTextFileTool(
           path: args.path,
           mode: args.mode,
           content: args.content,
-          expectedSha256: args.expectedSha256,
+          expectedSha256: args.mode === "overwrite" ? args.expectedSha256 : undefined,
           operatorPolicy: context?.workspacePolicy,
         });
 

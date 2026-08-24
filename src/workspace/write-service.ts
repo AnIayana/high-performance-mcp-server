@@ -359,7 +359,7 @@ export async function writeTextFileService(
   const mode = input.mode;
   if (mode !== "create" && mode !== "overwrite") {
     throw new WorkspaceSecurityError(
-      "invalid_path",
+      "invalid_input",
       `Invalid mode "${String(mode)}". Must be either "create" or "overwrite".`
     );
   }
@@ -380,7 +380,7 @@ export async function writeTextFileService(
   if (isCreate) {
     if (input.expectedSha256 !== undefined && input.expectedSha256.trim().length > 0) {
       throw new WorkspaceSecurityError(
-        "invalid_path",
+        "invalid_input",
         "expectedSha256 is forbidden when mode is 'create'."
       );
     }
