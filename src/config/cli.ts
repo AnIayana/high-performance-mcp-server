@@ -27,9 +27,12 @@ import {
   MAX_FETCH_TIMEOUT_MS,
 } from "../network/policy.js";
 import {
+  DEFAULT_MAX_RESOURCE_BYTES,
   DEFAULT_MAX_WRITE_BYTES,
   DEFAULT_WORKSPACE_OPERATOR_POLICY,
+  HARD_MAX_RESOURCE_BYTES,
   HARD_MAX_WRITE_BYTES,
+  MIN_RESOURCE_BYTES,
   MIN_WRITE_BYTES,
   createWorkspaceOperatorPolicy,
   type WorkspaceOperatorPolicy,
@@ -114,6 +117,7 @@ export function getHelpText(): string {
     "  --profile=<profile>            Security tool profile (default: safe)",
     "  --root=<path>                  Allowlisted read-only workspace root (repeatable, max 16)",
     "  --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)",
+    "  --workspace-max-resource-bytes=<n> Operator hard cap for resource read size in bytes (1-5242880, default: 1048576)",
     "  --network-allow-host=<pattern> Allowlisted public hostname or *.domain pattern (repeatable, operator restriction)",
     "  --network-deny-host=<pattern>  Denylisted hostname or *.domain pattern (repeatable, operator restriction)",
     "  --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)",
@@ -142,6 +146,7 @@ export function getHelpText(): string {
     "  PORT                           Default HTTP port override (e.g. 3000)",
     "  MCP_ROOTS_JSON                 JSON array of read-only workspace root paths (e.g. [\"/path/to/project\"])",
     "  MCP_WORKSPACE_MAX_WRITE_BYTES  Operator workspace write size cap in bytes override (1-5242880)",
+    "  MCP_WORKSPACE_MAX_RESOURCE_BYTES Operator workspace resource read size cap in bytes override (1-5242880)",
     "  MCP_NETWORK_ALLOW_HOSTS_JSON   JSON array of allowed public hostname patterns (e.g. [\"example.com\",\"*.githubusercontent.com\"])",
     "  MCP_NETWORK_DENY_HOSTS_JSON    JSON array of denied hostname patterns (e.g. [\"ads.example.com\"])",
     "  MCP_NETWORK_HTTPS_ONLY         Enforce HTTPS-only mode (true/1/false/0)",
@@ -228,10 +233,14 @@ export function parseCliArgs(
   let envMaxResponseBytes: number | undefined;
   let envMaxTimeoutMs: number | undefined;
 
-  // Workspace mutation accumulators
+  // Workspace policy accumulators
   let cliWorkspaceMaxWriteBytes: number | undefined;
   let envWorkspaceMaxWriteBytes: number | undefined;
   let seenWorkspaceMaxWriteBytes = false;
+
+  let cliWorkspaceMaxResourceBytes: number | undefined;
+  let envWorkspaceMaxResourceBytes: number | undefined;
+  let seenWorkspaceMaxResourceBytes = false;
 
   // Network conditional cache accumulators
   let cliCacheEnabled: boolean | undefined;
@@ -331,6 +340,23 @@ export function parseCliArgs(
       );
     }
     envWorkspaceMaxWriteBytes = parsed;
+  }
+
+  if (
+    env.MCP_WORKSPACE_MAX_RESOURCE_BYTES !== undefined &&
+    env.MCP_WORKSPACE_MAX_RESOURCE_BYTES.trim().length > 0
+  ) {
+    const parsed = parseStrictInteger(
+      env.MCP_WORKSPACE_MAX_RESOURCE_BYTES,
+      MIN_RESOURCE_BYTES,
+      HARD_MAX_RESOURCE_BYTES
+    );
+    if (parsed === null) {
+      return errorResult(
+        `Invalid MCP_WORKSPACE_MAX_RESOURCE_BYTES environment variable: "${env.MCP_WORKSPACE_MAX_RESOURCE_BYTES}". Must be an integer between ${MIN_RESOURCE_BYTES} and ${HARD_MAX_RESOURCE_BYTES}.`
+      );
+    }
+    envWorkspaceMaxResourceBytes = parsed;
   }
 
   // Network environment variables
@@ -627,6 +653,26 @@ export function parseCliArgs(
         );
       }
       cliWorkspaceMaxWriteBytes = parsed;
+    } else if (optName === "--workspace-max-resource-bytes") {
+      if (seenWorkspaceMaxResourceBytes) {
+        return errorResult(
+          `Duplicate option specified: "--workspace-max-resource-bytes". This option may only be specified once.`
+        );
+      }
+      seenWorkspaceMaxResourceBytes = true;
+      if (optValue === undefined) {
+        if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+          return errorResult(`Missing value for option "--workspace-max-resource-bytes".`);
+        }
+        optValue = args[++i]!;
+      }
+      const parsed = parseStrictInteger(optValue, MIN_RESOURCE_BYTES, HARD_MAX_RESOURCE_BYTES);
+      if (parsed === null) {
+        return errorResult(
+          `Invalid --workspace-max-resource-bytes option: "${optValue}". Must be an integer between ${MIN_RESOURCE_BYTES} and ${HARD_MAX_RESOURCE_BYTES}.`
+        );
+      }
+      cliWorkspaceMaxResourceBytes = parsed;
     } else if (optName === "--network-allow-host") {
       if (optValue === undefined) {
         if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
@@ -779,8 +825,11 @@ export function parseCliArgs(
   // Precedence resolution for workspace policy:
   const effectiveWorkspaceMaxWriteBytes =
     cliWorkspaceMaxWriteBytes ?? envWorkspaceMaxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES;
+  const effectiveWorkspaceMaxResourceBytes =
+    cliWorkspaceMaxResourceBytes ?? envWorkspaceMaxResourceBytes ?? DEFAULT_MAX_RESOURCE_BYTES;
   const workspacePolicy = createWorkspaceOperatorPolicy({
     maxWriteBytes: effectiveWorkspaceMaxWriteBytes,
+    maxResourceBytes: effectiveWorkspaceMaxResourceBytes,
   });
 
   // Precedence resolution for network policy:

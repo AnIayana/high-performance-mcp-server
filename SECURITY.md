@@ -170,6 +170,22 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Zero Process or Deletion Capabilities**: The server contains no file deletion (`unlink`, `rm`), rename, directory removal, permission modification (`chmod`, `chown`), or command execution (`exec`, `spawn`) capabilities.
 - **Residual Threat Model Boundary**: Pre-replace revalidation and atomic publication eliminate race conditions against untrusted MCP callers. However, this security boundary isolates untrusted MCP inputs from host filesystems; it does not protect against a malicious local OS process executing with equivalent local user filesystem permissions racing path components in the final kernel syscall window.
 
+### 14. Workspace Resource Security (`workspace_text_file`)
+- **Strict Profile Gating**: Workspace resources are exposed exclusively in profiles with workspace read capability (`workspace`, `workspace_write`, `all`). Profiles without workspace read authority (`safe`, `network`, `diagnostics`, `benchmark`, `admin`) do not register resource endpoints and reject resource requests with `Method not found`, leaking zero workspace existence.
+- **No Absolute Filesystem URIs**: Resources use logical URIs (`workspace:///<rootId>/<path>`). Absolute host filesystem paths (`file:///C:/...`, `/home/...`, realpaths) are never accepted in URIs or exposed in metadata.
+- **Logical Root Identifiers**: The resource URI identifies roots strictly by their registered logical `rootId` (e.g. `root-1`, `root-2`). Root IDs must match configured workspace roots; unknown root IDs fail safely with sanitized errors.
+- **Reuse of Central Workspace Security Resolver**: Resource resolution reuses `resolveExistingPathWithinRoot`, enforcing strict canonical containment inside `root.realPath` and blocking symlink/junction escapes.
+- **Traversal & Encoded Traversal Controls**: Raw URIs and decoded path segments are strictly validated. Plain dot segments (`.`, `..`), encoded dots (`%2e`, `%2e%2e`), encoded separators (`%2F`, `%5C`), encoded NULs (`%00`), and double-encoded sequences (`%252e`, `%252f`) are rejected before filesystem access.
+- **Regular Files Only**: Resource targets must be regular files (`stats.isFile()`). Directories, FIFOs, sockets, and device files are rejected (`unsupported_file_type`).
+- **Complete-or-Error Semantics & Hard Size Bounds**: Resources are never silently truncated. File size is checked via `stat` before allocating read memory, with secondary buffer length bounds enforced during reading as defense in depth against size races. Files exceeding the effective limit (`--workspace-max-resource-bytes`, default 1 MiB, hard cap 5 MiB) are rejected with `resource_too_large`.
+- **Strict UTF-8 & Binary Rejection**: All resource content is decoded with strict fatal UTF-8 rules (`fatal: true`). Files containing NUL bytes (`\0`) or invalid UTF-8 sequences are rejected as unsupported binary files (`invalid_text_encoding`).
+- **No Recursive Resource Enumeration**: The server advertises the URI template `workspace:///{rootId}/{+path}` for discovery. It does not recursively crawl filesystem trees to populate `resources/list`, preventing memory spikes, latency, and unintended metadata disclosure.
+- **No File Watchers or Subscriptions**: Milestone 5 does not implement filesystem subscriptions (`resources/subscribe`) or file watchers.
+- **No Workspace Resource Cache**: Resources are not cached in-memory; each read reflects current filesystem state.
+- **Strict Read-Only Guarantee**: Possessing or reading a workspace resource URI grants zero mutation, deletion, or execution capabilities.
+- **Error Privacy**: Client-facing error messages are sanitized to reference only logical root IDs and relative paths, preventing server host path disclosure.
+
+
 
 
 

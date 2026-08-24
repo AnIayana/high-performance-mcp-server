@@ -251,6 +251,44 @@ Server operators can set strict hard caps on the maximum allowed write or edit p
 
 ---
 
+## MCP Workspace Resources
+
+In addition to workspace inspection tools, this server natively exposes allowlisted workspace text files as standard **MCP Resources** using the official URI Template:
+
+```
+workspace:///{rootId}/{+path}
+```
+
+### Canonical Resource URI Format
+
+Workspace resources use a stable, portable URI scheme based on logical root IDs rather than host filesystem paths:
+
+- `workspace:///root-1/README.md`
+- `workspace:///root-1/src/index.ts`
+- `workspace:///root-2/docs/architecture.md`
+
+Host absolute paths (such as `file:///C:/...` or `/home/...`) are **never** exposed in resource URIs, titles, or error messages.
+
+### Resource Invariants & Security Guarantees
+
+- **Profile Gated**: Workspace resources are exposed exclusively in workspace-capable profiles (`workspace`, `workspace_write`, `all`). In non-workspace profiles (`safe`, `network`, `diagnostics`, `benchmark`, `admin`), resource endpoints return `Method not found` and zero workspace existence is advertised.
+- **Strict Read-Only**: Resources are strictly read-only. Possessing a resource URI never grants mutation rights or filesystem write capabilities.
+- **Root & Symlink Confinement**: Resource reads reuse the central workspace security resolver, enforcing strict containment inside configured `--root` directories and blocking symlink/junction escapes.
+- **Complete-or-Error Semantics**: Resources are never silently truncated. If a file exceeds the operator byte limit, the read is rejected with `resource_too_large`.
+- **Strict UTF-8 & Text Only**: All resource content is decoded strictly as UTF-8 text (`fatal: true`). Files containing NUL bytes (`0x00`) or non-UTF-8 sequences are rejected as unsupported binary files (`invalid_text_encoding`).
+- **No Recursive Enumeration**: `resources/templates/list` advertises the resource template (`workspace_text_file`). The server does **not** recursively crawl repository directories for `resources/list`, preventing latency, memory spikes, and information disclosure on large repositories.
+- **Operator-Configurable Resource Size Limits**:
+  - CLI flag: `--workspace-max-resource-bytes=<bytes>` (1 to 5,242,880 bytes / 5 MiB, default: `1048576` / 1 MiB)
+  - Environment variable: `MCP_WORKSPACE_MAX_RESOURCE_BYTES=<bytes>`
+
+### Recommended Client Workflow
+
+1. **Discovery**: Discover available root IDs and paths using `workspace_roots`, `list_directory`, or `search_files`.
+2. **Read Resource**: Consume text files directly via standard MCP `resources/read` using `workspace:///<rootId>/<path>`.
+3. **Guarded Mutation**: When mutations are needed, use `read_text_file` to obtain the authoritative `sha256` hash and perform concurrency-controlled edits via `write_text_file` or `edit_text_file` in the `workspace_write` profile.
+
+---
+
 ## Network Access & `fetch_url`
 
 Network access is **disabled by default**. To enable SSRF-hardened read-only web fetching, run with `--profile=network` (or `--profile=all`):

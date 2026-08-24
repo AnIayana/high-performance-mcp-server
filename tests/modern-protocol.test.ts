@@ -278,25 +278,19 @@ test("Modern MCP Protocol (2026-07-28) — Workspace Profile, Search, Prompts & 
     assert.ok(traversalText.includes("escapes root boundary"));
     assert.equal(traversalText.includes(fixture.tempDir), false);
 
-    // 9. Static resource: workspace://roots
-    const { resources } = await client.listResources();
-    assert.ok(resources.some((r) => r.uri === "workspace://roots"));
-
-    const rootsResourceRead = await client.readResource({ uri: "workspace://roots" });
-    assert.ok(rootsResourceRead.contents.length > 0);
-    const resourceText = getResourceText(rootsResourceRead.contents[0]);
-    assert.ok(resourceText.includes("root-1"));
-    assert.equal(resourceText.includes(fixture.tempDir), false);
-
-    // 10. Dynamic resource template: workspace://file/{rootId}{?path}
+    // 9. MCP-Native Resource Template: workspace_text_file (workspace:///{rootId}/{+path})
     const { resourceTemplates } = await client.listResourceTemplates();
-    assert.ok(resourceTemplates.some((t) => t.name === "workspace-file"));
+    assert.ok(resourceTemplates.some((t) => t.name === "workspace_text_file"));
+    const wsTemplate = resourceTemplates.find((t) => t.name === "workspace_text_file")!;
+    assert.equal(wsTemplate.uriTemplate, "workspace:///{rootId}/{+path}");
 
-    const dynamicRead = await client.readResource({
-      uri: "workspace://file/root-1?path=README.md",
+    // 10. Read Resource via Canonical URI: workspace:///root-1/README.md
+    const resourceRead = await client.readResource({
+      uri: "workspace:///root-1/README.md",
     });
-    assert.equal(getResourceText(dynamicRead.contents[0]), "# Modern MCP Fixture\n");
-    assert.equal(getResourceMimeType(dynamicRead.contents[0]), "text/markdown");
+    assert.equal(getResourceText(resourceRead.contents[0]), "# Modern MCP Fixture\n");
+    assert.equal(getResourceMimeType(resourceRead.contents[0]), "text/markdown; charset=utf-8");
+    assert.equal(resourceRead.contents[0]!.uri, "workspace:///root-1/README.md");
 
     // 11. Prompts Listing (4 prompts for workspace profile)
     const { prompts } = await client.listPrompts();
