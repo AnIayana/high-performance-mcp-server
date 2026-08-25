@@ -1,12 +1,16 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import type { ServerContext } from "../core/server-context.js";
-import { detectMimeType } from "../workspace/mime.js";
-import { MAX_TEXT_READ_BYTES } from "../workspace/path-security.js";
-import { readTextFileService } from "../workspace/service.js";
+import { readWorkspaceResourceService } from "../workspace/resource-service.js";
+
+/**
+ * Profiles authorized for read-only workspace resources.
+ */
+const RESOURCE_CAPABLE_PROFILES = new Set(["workspace", "workspace_write", "all"]);
 
 /**
  * Registers MCP resources onto the server instance based on the active security profile.
- * Only registers filesystem resources when the workspace or all profile is explicitly active.
+ * Only registers workspace resource templates when the active profile has workspace read authority
+ * (i.e. workspace, workspace_write, all).
  */
 export function registerResources(
   server: McpServer,
@@ -14,71 +18,42 @@ export function registerResources(
 ): void {
   const profile = context?.profile ?? "safe";
 
-  // Only expose workspace resources when the workspace or all profile is enabled
-  if (profile !== "workspace" && profile !== "all") {
+  // Strict profile gating: only workspace-capable profiles expose workspace resources
+  if (!RESOURCE_CAPABLE_PROFILES.has(profile)) {
     return;
   }
 
-  // 1. Static resource: workspace://roots
+  // MCP-Native Resource Template: workspace:///{rootId}/{+path}
   server.registerResource(
-    "workspace-roots",
-    "workspace://roots",
+    "workspace_text_file",
+    new ResourceTemplate("workspace:///{rootId}/{+path}", { list: undefined }),
     {
-      title: "Allowed Workspace Roots",
-      description: "Lists the read-only filesystem roots explicitly allowed for this MCP server instance",
-      mimeType: "application/json",
+      title: "Workspace Text File",
+      description: "Read an allowlisted UTF-8 text file from a configured workspace root.",
+      mimeType: "text/plain; charset=utf-8",
     },
     async (uri) => {
-      const roots =
-        context?.workspace?.roots.map((r) => ({
-          id: r.id,
-          name: r.name,
-        })) ?? [];
+      try {
+        const result = await readWorkspaceResourceService(
+          context?.workspace,
+          uri.href,
+          context?.workspacePolicy
+        );
 
-      return {
-        contents: [
-          {
-            uri: uri.href,
-            mimeType: "application/json",
-            text: JSON.stringify({ roots }, null, 2),
-          },
-        ],
-      };
-    }
-  );
-
-  // 2. Dynamic resource template: workspace://file/{rootId}{?path}
-  server.registerResource(
-    "workspace-file",
-    new ResourceTemplate("workspace://file/{rootId}{?path}", { list: undefined }),
-    {
-      title: "Workspace File",
-      description: "Read-only text file content within an allowed workspace root",
-    },
-    async (uri, variables) => {
-      const rootId = String(variables.rootId);
-      const queryPath = uri.searchParams.get("path");
-      const variablePath = typeof variables.path === "string" ? variables.path : undefined;
-      const targetPath = queryPath ?? variablePath ?? ".";
-
-      const readResult = await readTextFileService(
-        context?.workspace,
-        rootId,
-        targetPath,
-        MAX_TEXT_READ_BYTES
-      );
-
-      const mimeType = detectMimeType(targetPath);
-
-      return {
-        contents: [
-          {
-            uri: uri.href,
-            mimeType,
-            text: readResult.text,
-          },
-        ],
-      };
+        return {
+          contents: [
+            {
+              uri: result.uri,
+              mimeType: result.mimeType,
+              text: result.text,
+            },
+          ],
+        };
+      } catch (error) {
+        throw new Error(
+          `Resource read failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     }
   );
 }

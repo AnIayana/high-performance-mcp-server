@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MCP-native read-only workspace Resource Template (`workspace:///{rootId}/{+path}`) for consuming allowlisted workspace text files directly through standard MCP `resources/read`.
+- Profile-gated workspace file resource access exposed exclusively in workspace-capable profiles (`workspace`, `workspace_write`, `all`).
+- Operator-configurable workspace resource read limit (`--workspace-max-resource-bytes`, `MCP_WORKSPACE_MAX_RESOURCE_BYTES`) with a 1 MiB default and 5 MiB hard maximum cap.
 - Opt-in `workspace_write` tool profile exposing guarded text file creation/overwrite (`write_text_file`) and transactional literal editing (`edit_text_file`) capabilities.
 - Optimistic concurrency control via mandatory `expectedSha256` hashing for file overwrites and edits to prevent lost updates and race conditions.
 - Transactional in-memory sequential editing engine applying exact literal replacements with strict occurrence guarantees (`expectedOccurrences`) and zero regex replacement token expansion (`$$`, `$1`, `$&`).
@@ -22,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Resource reads reuse the central workspace security resolver, enforcing strict containment inside configured `--root` directories and blocking symlink/junction escapes.
+- Complete bounded UTF-8 resource reads with strict size checking (`stat` check + buffer bound defense in depth), strict UTF-8 fatal decoding (`fatal: true`), and binary/NUL rejection.
+- Plain, percent-encoded, and double-encoded path traversal and separator protections (`%2e%2e`, `%2f`, `%5c`, `%252e`).
+- Resource template discovery model without recursive repository enumeration in `resources/list`.
 - Workspace isolation and canonical parent directory containment verification preventing symlink and junction escape attacks during file creation and modification.
 - Atomic same-directory file writing strategy using temporary files (`.mcp-temp-<uuid>.tmp`), explicit filesystem sync (`fsync`), pre-rename race revalidation, and atomic `fs.rename` replacement.
 - Invariant preservation: standard `workspace` profile remains strictly read-only; mutation tools exist exclusively in `workspace_write` and `all` profiles.

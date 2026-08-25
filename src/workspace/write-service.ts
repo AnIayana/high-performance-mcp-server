@@ -10,14 +10,20 @@ export const DEFAULT_MAX_WRITE_BYTES = 1048576; // 1 MiB
 export const HARD_MAX_WRITE_BYTES = 5242880;   // 5 MiB
 export const MIN_WRITE_BYTES = 1;
 
+export const DEFAULT_MAX_RESOURCE_BYTES = 1048576; // 1 MiB
+export const HARD_MAX_RESOURCE_BYTES = 5242880;   // 5 MiB
+export const MIN_RESOURCE_BYTES = 1;
+
 export const SHA256_HEX_REGEX = /^[a-f0-9]{64}$/;
 
 export interface WorkspaceOperatorPolicy {
   readonly maxWriteBytes: number;
+  readonly maxResourceBytes: number;
 }
 
 export const DEFAULT_WORKSPACE_OPERATOR_POLICY: WorkspaceOperatorPolicy = Object.freeze({
   maxWriteBytes: DEFAULT_MAX_WRITE_BYTES,
+  maxResourceBytes: DEFAULT_MAX_RESOURCE_BYTES,
 });
 
 /**
@@ -31,8 +37,14 @@ export function createWorkspaceOperatorPolicy(
       ? Math.max(MIN_WRITE_BYTES, Math.min(HARD_MAX_WRITE_BYTES, policy.maxWriteBytes))
       : DEFAULT_MAX_WRITE_BYTES;
 
+  const maxResourceBytes =
+    typeof policy?.maxResourceBytes === "number" && Number.isSafeInteger(policy.maxResourceBytes)
+      ? Math.max(MIN_RESOURCE_BYTES, Math.min(HARD_MAX_RESOURCE_BYTES, policy.maxResourceBytes))
+      : DEFAULT_MAX_RESOURCE_BYTES;
+
   return Object.freeze({
     maxWriteBytes,
+    maxResourceBytes,
   });
 }
 

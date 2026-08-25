@@ -5,6 +5,9 @@
 export type WorkspaceErrorCode =
   | "invalid_path"
   | "invalid_input"
+  | "invalid_resource_uri"
+  | "resource_not_found"
+  | "resource_too_large"
   | "access_denied"
   | "not_found"
   | "missing_parent"

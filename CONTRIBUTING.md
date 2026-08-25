@@ -100,7 +100,20 @@ When contributing to filesystem or workspace search capabilities:
 
 ---
 
-## 5. Prompt Contribution Rules
+## 6. Workspace Resource Invariants
+
+When contributing to MCP workspace resources (`src/resources/` and `src/workspace/`):
+1. **Central Resolver Reuse**: Resource path resolution must **never** bypass the central workspace security resolver (`resolveExistingPathWithinRoot`).
+2. **Zero Host Path Disclosure**: Never expose host absolute filesystem paths (`C:\...`, `/home/...`, realpaths) in resource URIs, metadata, or error messages. Always use canonical logical URIs (`workspace:///<rootId>/<path>`).
+3. **Complete-or-Error Semantics**: Resources must never be silently truncated. If a file exceeds the operator byte limit, reject the read with `resource_too_large`.
+4. **No Recursive Enumeration**: Do not recursively crawl filesystem trees to populate `resources/list`. Expose the resource template (`workspace_text_file`) for client discovery.
+5. **Strict Read-Only Guarantee**: Possessing or reading a workspace resource URI must never grant mutation capabilities or have side effects on the filesystem.
+6. **Explicit Profile Gating**: Resources must be registered exclusively under `workspace`, `workspace_write`, and `all` profiles. Non-workspace profiles must not advertise or handle resource endpoints.
+7. **Encoded Traversal Tests**: Any URI parsing changes must include tests for plain, percent-encoded, and double-encoded traversal sequences (`%2e%2e`, `%2f`, `%5c`, `%252e`).
+
+---
+
+## 7. Prompt Contribution Rules
 
 When creating or modifying modular MCP prompts in `src/prompts/`:
 1. **Use `server.registerPrompt()`**: Use official modern MCP v2 registration APIs with explicit Zod `argsSchema`.
