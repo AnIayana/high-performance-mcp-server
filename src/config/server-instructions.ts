@@ -46,7 +46,7 @@ Safety and Operational Rules:
 - Workspace resources remain strictly read-only; possessing a resource URI does not grant mutation capability.
 - Mutations are atomic and transactional. Edits never expand regex or special tokens.
 - Concurrency is protected via expectedSha256; conflicts abort without corrupting files.
-- No file deletion, rename, directory removal, chmod, or shell execution capabilities exist.`;
+- No MCP tools expose file deletion, arbitrary rename, directory removal, chmod, or shell execution.`;
 
 const DIAGNOSTICS_INSTRUCTIONS = `Server provides process and host diagnostics.
 - Use cache_stats, server_metrics, system_stats, and worker_pool_stats to assess server health and event-loop lag.

@@ -1,14 +1,14 @@
 # High-Performance MCP Server
 
-A high-performance, modular Model Context Protocol (MCP) server built with TypeScript and the modern MCP v2 SDK (`@modelcontextprotocol/server`). Features safe-by-default security profiles, profile-aware server instructions, modular MCP prompts, read-only workspace access with search and host path privacy, Streamable HTTP, Stdio transport, reusable worker thread pooling, production LRU caching with single-flight stampede protection, and structured telemetry.
+A high-performance, modular Model Context Protocol (MCP) server built with TypeScript and the modern MCP v2 SDK (`@modelcontextprotocol/server`). Features safe-by-default security profiles, profile-aware server instructions, modular MCP prompts, allowlisted workspace inspection with opt-in guarded text mutation, SSRF-hardened network access, Streamable HTTP, Stdio transport, reusable worker thread pooling, production LRU caching with single-flight stampede protection, and structured telemetry.
 
 ---
 
-## Project Status: Public Preview (v0.1.0)
+## Project Status: Public Preview (v0.2.0)
 
 > [!NOTE]
-> **Status**: `0.1.0` Public Preview.
-> This package provides safe-by-default MCP tools, read-only workspace inspection, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
+> **Status**: `0.2.0` Public Preview.
+> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
 
 ---
 
@@ -17,9 +17,9 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 - **Modern MCP v2 Architecture**: Built natively on `@modelcontextprotocol/server` with standard JSON Schema draft 2020-12 validation and full 2026-07-28 protocol support.
 - **Dual Transport Support**: Run seamlessly over standard input/output (`stdio`) or modern Streamable HTTP (`node:http` + `/mcp`).
 - **Profile-Aware Server Instructions**: Dynamic server instructions that guide connected LLMs on recommended workflows, tool sequencing, and safety boundaries based on the active profile.
-- **Modular MCP Prompts**: Reusable task prompts (`explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol`) exposed exclusively in `workspace` and `all` profiles.
-- **Safe-by-Default Tool Profiles**: Default `safe` profile exposes zero filesystem or hardware inspection. Explicit opt-in for `workspace`, `diagnostics`, `benchmark`, `admin`, or `all`.
-- **Read-Only Workspace & Host Path Privacy**: Secure allowlisted directory access with path traversal and symlink escape prevention, logical root mapping (`root-1`, `root-2`), 1 MiB hard limits, and binary file protection without exposing host absolute paths to clients or models.
+- **Modular MCP Prompts**: Reusable task prompts (`explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol`) exposed exclusively in `workspace`, `workspace_write`, and `all` profiles.
+- **Safe-by-Default Tool Profiles**: Default `safe` profile exposes zero filesystem, network, or hardware inspection. Filesystem mutation and outbound network access require explicit `workspace_write`/`network` (or `all`) opt-in.
+- **Workspace Security & Host Path Privacy**: Secure allowlisted directory access with path traversal and symlink escape prevention, logical root mapping (`root-1`, `root-2`), bounded text operations, and binary file protection without exposing host absolute paths to clients or models. The `workspace` profile remains read-only; guarded mutation is isolated to `workspace_write` and `all`.
 - **Workspace Search v1**: Fast, bounded literal file and text search (`search_files`, `search_text`) with ignored directory defaults, bounded concurrency, coordinate mapping, and client cancellation.
 - **Worker Thread Pool**: Offload CPU-heavy tasks from the Node.js event loop with automatic lifecycle recovery and zero-drift invariants.
 - **Production LRU Cache**: Memory-bounded cache with TTL support and single-flight request coalescing to eliminate cache stampedes.
@@ -112,7 +112,7 @@ When an MCP client connects, the server delivers concise, profile-tailored instr
 
 ### Modular MCP Prompts
 
-When running in `workspace` or `all` profile, the server exposes modular prompts that provide structured workflows for common engineering tasks:
+When running in `workspace`, `workspace_write`, or `all` profile, the server exposes modular prompts that provide structured workflows for common engineering tasks:
 
 | Prompt | Arguments | Purpose |
 | :--- | :--- | :--- |
@@ -128,7 +128,7 @@ When running in `workspace` or `all` profile, the server exposes modular prompts
 
 ## Read-Only Workspace Access
 
-Filesystem access is **disabled by default**. To enable read-only workspace access, explicitly specify `--profile=workspace` (or `--profile=all`) and at least one allowlisted `--root` directory:
+Filesystem access is **disabled by default**. To enable read-only workspace access, explicitly specify `--profile=workspace` and at least one allowlisted `--root` directory. The broader `all` profile also includes these tools but additionally enables mutation, network, diagnostics, benchmark, and admin capabilities.
 
 ```bash
 # POSIX / macOS / Linux
@@ -143,7 +143,7 @@ npx high-performance-mcp-server --profile=workspace --root=./packages/core --roo
 
 ### Security Guarantees & Constraints
 
-- **Host Path Privacy**: Configured absolute filesystem paths remain internal to the server. The `workspace_roots` tool and `workspace://roots` resource return logical root identifiers (`id: "root-1"`, `name: "my-project"`) rather than absolute host paths:
+- **Host Path Privacy**: Configured absolute filesystem paths remain internal to the server. The `workspace_roots` tool returns logical root identifiers (`id: "root-1"`, `name: "my-project"), and workspace resource URIs use those identifiers rather than absolute host paths:
   ```json
   {
     "roots": [
@@ -155,12 +155,12 @@ npx high-performance-mcp-server --profile=workspace --root=./packages/core --roo
   }
   ```
 - **Strict Allowlist**: Only explicitly passed `--root` directories can be accessed. Maximum 16 unique roots allowed (and max 64 raw paths before deduplication).
-- **Read-Only**: No filesystem mutation functions (`writeFile`, `unlink`, `rm`, `mkdir`, `rename`, etc.) exist in the server codebase.
+- **Read-Only Profile**: The standard `workspace` profile exposes no mutation tools. Guarded text mutation is available only through the explicit `workspace_write` and `all` profiles; no MCP tools expose deletion, arbitrary rename, directory creation, permission changes, or command execution.
 - **Traversal & Symlink Protection**: Target paths are canonicalized using `fs.realpath` and strictly verified to never escape root boundaries.
 - **Sanitized Errors**: Error responses reference only logical root IDs, root names, and requested relative paths, ensuring internal directory structures are never leaked.
 - **File Read Limits**: Default text read limit is 256 KiB; hard upper limit is 1 MiB (`MAX_TEXT_READ_BYTES`).
 - **Binary File Detection**: Files containing NUL bytes (`\0`) are rejected by `read_text_file` to prevent context pollution.
-- **MCP Resources**: Exposes `workspace://roots` (static list of roots) and `workspace://file/{rootId}{?path}` (dynamic text reader).
+- **MCP Resources**: Exposes the canonical `workspace:///{rootId}/{+path}` (`workspace_text_file`) template. Discover logical roots with `workspace_roots`; `resources/list` does not recursively enumerate files.
 
 ### Searching the Workspace
 
@@ -370,7 +370,9 @@ Options:
   --transport=<stdio|http>       Transport protocol to run (default: stdio)
   --port=<number>                HTTP server port (default: 3000, only for http transport)
   --profile=<profile>            Security tool profile (default: safe)
-  --root=<path>                  Allowlisted read-only workspace root (repeatable, max 16)
+  --root=<path>                  Allowlisted workspace root (repeatable, max 16)
+  --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)
+  --workspace-max-resource-bytes=<n> Operator hard cap for resource read size in bytes (1-5242880, default: 1048576)
   --network-allow-host=<pattern> Allowlisted public hostname or *.domain pattern (repeatable, operator restriction)
   --network-deny-host=<pattern>  Denylisted hostname or *.domain pattern (repeatable, operator restriction)
   --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)
@@ -423,7 +425,7 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
+| `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
 | `MCP_NETWORK_ALLOW_HOSTS_JSON` | `string` | *(none)* | JSON array of allowed public host patterns (e.g. `["example.com","*.githubusercontent.com"]`) |

@@ -133,7 +133,7 @@ jobs:
           echo "### 🔍 Release Dry-Run Passed Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: \`${{ inputs.version }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Quality Gate**: Passed (Typecheck, 99 Tests, Build, Security Scans, Smoke Test)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Quality Gate**: Passed (Typecheck, Full Test Suite, Build, Security Scans, Smoke Test)" >> $GITHUB_STEP_SUMMARY
           echo "- **MCP Manifest**: \`server.json\` validated against official schema" >> $GITHUB_STEP_SUMMARY
           echo "- **npm Dry Run**: Validated 10 package assets without publication" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

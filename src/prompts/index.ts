@@ -8,13 +8,13 @@ import registerTraceSymbolPrompt from "./trace-symbol.js";
 /**
  * Registers modular MCP prompts onto the McpServer instance.
  * Prompts are profile-aware and are only registered when the active profile
- * is "workspace" or "all".
+ * is "workspace", "workspace_write", or "all".
  */
 export function registerPrompts(server: McpServer, context?: ServerContext): void {
   const profile = context?.profile ?? "safe";
 
-  // Only expose workspace prompts for workspace and all profiles
-  if (profile !== "workspace" && profile !== "all") {
+  // Only expose workspace prompts for profiles with workspace read capability
+  if (profile !== "workspace" && profile !== "workspace_write" && profile !== "all") {
     return;
   }
 

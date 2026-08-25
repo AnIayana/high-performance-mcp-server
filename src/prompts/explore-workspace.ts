@@ -27,7 +27,7 @@ export function buildExploreWorkspacePrompt(
 Recommended Exploration Strategy:
 1. Discover directory structure or file targets using search_files with the validated root ID.
 2. Search for relevant identifiers or keywords using search_text.
-3. Inspect file metadata with file_info or read contents with read_text_file (or workspace://file resource) only for pertinent files.
+3. Inspect file metadata with file_info or read pertinent contents with read_text_file or the canonical workspace:///<rootId>/<path> resource.
 4. Synthesize your findings clearly using root-relative paths.
 
 Safety and Operating Rules:

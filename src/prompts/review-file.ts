@@ -28,7 +28,7 @@ export function buildReviewFilePrompt(
 
 Review Procedure:
 1. Inspect metadata using file_info with the validated root ID and the path specified in the <path_data> block below.
-2. Read the file contents via read_text_file or workspace://file resource for the path specified in the <path_data> block below.
+2. Read the file contents via read_text_file or the canonical workspace:///<rootId>/<path> resource for the path specified in the <path_data> block below.
 3. If external references or callers need verification, search the codebase with search_text.
 4. Provide structured observations organized by importance, highlighting clarity, maintainability, correctness, and potential edge cases.
 

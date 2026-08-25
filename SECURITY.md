@@ -27,19 +27,21 @@ If you discover a security vulnerability in this project, please report it respo
 By default, the server operates under the `safe` profile, exposing only harmless utilities (`echo`, `ping`).
 - **`safe`**: Zero filesystem access, zero hardware metrics, zero mutation. Safe for public exposure.
 - **`workspace`**: Explicit read-only filesystem inspection restricted to configured `--root` directories.
+- **`workspace_write`**: Guarded text creation, overwrite, and edit operations restricted to configured `--root` directories and protected by size limits and optimistic concurrency checks.
+- **`network`**: SSRF-hardened, read-only HTTP/HTTPS GET access to public destinations, subject to built-in and operator egress policy.
 - **`diagnostics`**: Exposes host OS name, CPU model, uptime, and memory usage. Should only be enabled in trusted monitoring environments.
 - **`benchmark`**: Executes heavy CPU prime calculations. When enabled, CPU consumption increases significantly.
 - **`admin`**: Allows mutating server runtime state (such as clearing the LRU cache or resetting telemetry counters).
 
 ### 2. Workspace Profile Security & Risk Model
-- **Explicit Opt-In**: The `workspace` profile is disabled by default and requires at least one `--root` directory.
+- **Explicit Opt-In**: The `workspace` and `workspace_write` profiles are disabled by default and require at least one `--root` directory.
 - **Risk of File Exposure**: All files within configured workspace roots may be read by connected LLMs or MCP clients. **Never allowlist sensitive directories** (such as `/`, `C:\`, `/etc`, or entire user home directories `~`).
-- **Strict Read-Only Enforcement**: The server contains no filesystem mutation capabilities (`writeFile`, `unlink`, `rm`, `mkdir`, `rename`, `chmod`, `exec`, `spawn`).
+- **Strict Profile Separation**: The standard `workspace` profile registers no mutation tools. Guarded text mutation is isolated to `workspace_write` and `all`; no MCP tools expose deletion, arbitrary rename, directory creation, permission changes, or command execution.
 - **Path Traversal & Symlink Escape Guards**: Canonical path resolution (`fs.realpath`) verifies that requested paths and symlinks/junctions never escape the configured root boundaries.
 - **Buffer & Context Exhaustion Limits**: Hard maximum file read limit is 1 MiB (`MAX_TEXT_READ_BYTES`), and binary files (containing NUL bytes) are automatically rejected.
 
 ### 3. Host Path Privacy
-- **Logical Root Identifiers**: The server maps configured `--root` directories to logical identifiers (`root-1`, `root-2`, etc.) and sanitized directory names. Absolute configured host paths (`C:\...`, `/home/user/...`) are internal server configuration and are never serialized in `workspace_roots`, `search_files`, `search_text`, server instructions, prompts, or `workspace://roots` to MCP clients or LLMs.
+- **Logical Root Identifiers**: The server maps configured `--root` directories to logical identifiers (`root-1`, `root-2`, etc.) and sanitized directory names. Absolute configured host paths (`C:\...`, `/home/user/...`) are internal server configuration and are never serialized in `workspace_roots`, `search_files`, `search_text`, server instructions, prompts, or canonical workspace resource URIs.
 - **Sanitized Error Responses**: All client-facing workspace errors are strictly sanitized to reference only logical root IDs, root names, and requested relative paths, preventing internal host directory tree leakage.
 
 ### 4. Workspace Search Security
@@ -167,7 +169,7 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Literal Replacement Fidelity**: In-memory replacements use function-based replacements to guarantee 100% exact literal insertion without expanding JavaScript replacement patterns (e.g. `$$`, `$1`, `$&`, `$\``, `$'`).
 - **Strict UTF-8 Encoding & Binary Rejection**: All writes and edits enforce UTF-8 text encoding. Embedded NUL bytes (`\0`) in paths, content, or edit parameters are rejected (`invalid_text_encoding`). Target files for editing must decode cleanly with fatal UTF-8 rules. Existing UTF-8 BOM headers are preserved byte-for-byte (`ignoreBOM: true`).
 - **Operator-Configurable Write Ceilings**: Operators can enforce deployment-wide write size limits via `--workspace-max-write-bytes` (1 to 5,242,880 bytes / 5 MiB, default: `1048576` / 1 MiB). Target file size is checked via `stat` before allocating memory or reading full file contents.
-- **Zero Process or Deletion Capabilities**: The server contains no file deletion (`unlink`, `rm`), rename, directory removal, permission modification (`chmod`, `chown`), or command execution (`exec`, `spawn`) capabilities.
+- **No Caller-Exposed Process or Deletion Capabilities**: No MCP tool exposes file/directory deletion, arbitrary rename, permission modification, or command execution. Internal rename/unlink operations are limited to atomic file publication and cleanup of server-owned temporary files.
 - **Residual Threat Model Boundary**: Pre-replace revalidation and atomic publication eliminate race conditions against untrusted MCP callers. However, this security boundary isolates untrusted MCP inputs from host filesystems; it does not protect against a malicious local OS process executing with equivalent local user filesystem permissions racing path components in the final kernel syscall window.
 
 ### 14. Workspace Resource Security (`workspace_text_file`)
@@ -184,8 +186,6 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **No Workspace Resource Cache**: Resources are not cached in-memory; each read reflects current filesystem state.
 - **Strict Read-Only Guarantee**: Possessing or reading a workspace resource URI grants zero mutation, deletion, or execution capabilities.
 - **Error Privacy**: Client-facing error messages are sanitized to reference only logical root IDs and relative paths, preventing server host path disclosure.
-
-
 
 
 

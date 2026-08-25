@@ -104,7 +104,7 @@ test("Modern MCP Protocol (2026-07-28) — Safe Profile Connection & Identity", 
     assert.equal(client.getNegotiatedProtocolVersion(), "2026-07-28");
     assert.equal(client.getProtocolEra(), "modern");
 
-    // Server Identity verification (version 0.1.0 release preview)
+    // Server identity verification for the current release candidate
     const serverVersion = client.getServerVersion();
     assert.equal(serverVersion?.name, PACKAGE_NAME);
     assert.equal(serverVersion?.version, PACKAGE_VERSION);
@@ -424,4 +424,3 @@ test("Modern MCP Integration — Network profile tools list", async () => {
     await serverInstance.close();
   }
 });
-
