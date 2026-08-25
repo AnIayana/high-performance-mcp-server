@@ -200,20 +200,36 @@ jobs:
 
       - name: Verify npm Package Propagation
         run: |
-          echo "Verifying npm package visibility..."
-          FOUND=false
-          for i in {1..12}; do
-            if npm view "${EXPECTED_PACKAGE_NAME}@${{ inputs.version }}" version --json 2>/dev/null | grep -q "${{ inputs.version }}"; then
-              echo "✅ Verified high-performance-mcp-server@${{ inputs.version }} on npm registry."
-              FOUND=true
-              break
+          echo "Verifying anonymous public npm package visibility..."
+          CONSECUTIVE_SUCCESSES=0
+          PACKAGE_URL="https://registry.npmjs.org/${EXPECTED_PACKAGE_NAME}/${{ inputs.version }}"
+          for i in {1..24}; do
+            CACHE_BUST="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${i}"
+            PACKAGE_JSON=$(curl -fsS \
+              -H "Accept: application/json" \
+              -H "Cache-Control: no-cache" \
+              -H "Pragma: no-cache" \
+              "${PACKAGE_URL}?cache-bust=${CACHE_BUST}" 2>/dev/null || true)
+
+            if PACKAGE_JSON="$PACKAGE_JSON" node -e '
+              const data = JSON.parse(process.env.PACKAGE_JSON || "{}");
+              process.exit(data.name === process.env.EXPECTED_PACKAGE_NAME && data.version === process.argv[1] ? 0 : 1);
+            ' "${{ inputs.version }}"; then
+              CONSECUTIVE_SUCCESSES=$((CONSECUTIVE_SUCCESSES + 1))
+              if [ "$CONSECUTIVE_SUCCESSES" -ge 2 ]; then
+                echo "✅ Verified high-performance-mcp-server@${{ inputs.version }} twice via anonymous public npm API."
+                break
+              fi
+            else
+              CONSECUTIVE_SUCCESSES=0
             fi
-            echo "Waiting for npm registry propagation (attempt $i/12)..."
+
+            echo "Waiting for public npm registry propagation (attempt $i/24)..."
             sleep 5
           done
           
-          if [ "$FOUND" != "true" ]; then
-            echo "❌ Failed to verify npm package publication within expected time."
+          if [ "$CONSECUTIVE_SUCCESSES" -lt 2 ]; then
+            echo "❌ Failed to verify anonymous public npm package visibility within expected time."
             exit 1
           fi
 
@@ -242,7 +258,11 @@ jobs:
             .tools/mcp-publisher login github-oidc
             
             echo "Publishing server.json to official MCP Registry..."
-            .tools/mcp-publisher publish server.json
+            npx tsx scripts/release/publish-mcp-with-retry.ts \
+              --publisher .tools/mcp-publisher \
+              --manifest server.json \
+              --max-attempts 12 \
+              --delay-ms 10000
           else
             echo "MCP Registry server is already published for version ${{ inputs.version }}. Skipping MCP publish."
           fi
