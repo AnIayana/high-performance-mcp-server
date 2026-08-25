@@ -654,3 +654,253 @@ test("MCP Protocol — safe and network profiles isolate resources completely", 
     await cleanupFixture(fixture);
   }
 });
+
+// ============================================================================
+// 4. Extended Protocol, Capabilities, Round-Trip & Security Edge-Case Tests
+// ============================================================================
+
+test("MCP Protocol — Initialize capabilities across all profiles", async () => {
+  const fixture = await createTestWorkspaceFixture();
+  try {
+    const profiles = [
+      { profile: "safe", hasResources: false },
+      { profile: "network", hasResources: false },
+      { profile: "diagnostics", hasResources: false },
+      { profile: "benchmark", hasResources: false },
+      { profile: "admin", hasResources: false },
+      { profile: "workspace", hasResources: true },
+      { profile: "workspace_write", hasResources: true },
+      { profile: "all", hasResources: true },
+    ] as const;
+
+    for (const item of profiles) {
+      const server = createServer({
+        profile: item.profile,
+        workspaceConfig: fixture.config,
+      });
+
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "test-client", version: "1.0.0" });
+
+      await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+      const capabilities = client.getServerCapabilities();
+      if (item.hasResources) {
+        assert.ok(capabilities?.resources, `Profile ${item.profile} must advertise resources capability`);
+        assert.equal(capabilities.resources.listChanged, true);
+      } else {
+        assert.equal(
+          capabilities?.resources,
+          undefined,
+          `Profile ${item.profile} must NOT advertise resources capability`
+        );
+      }
+
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("MCP Protocol — resources/list returns empty list without recursive filesystem traversal", async () => {
+  const fixture = await createTestWorkspaceFixture();
+  try {
+    await fs.writeFile(path.join(fixture.root1Dir, "a.txt"), "A", "utf-8");
+    await fs.writeFile(path.join(fixture.root1Dir, "b.txt"), "B", "utf-8");
+
+    const server = createServer({
+      profile: "workspace",
+      workspaceConfig: fixture.config,
+    });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+    // resources/list returns empty array (does not walk filesystem)
+    const listRes = await client.listResources();
+    assert.deepEqual(listRes.resources, []);
+
+    // resources/templates/list returns the template
+    const templatesRes = await client.listResourceTemplates();
+    assert.equal(templatesRes.resourceTemplates.length, 1);
+    assert.equal(templatesRes.resourceTemplates[0]!.name, "workspace_text_file");
+    assert.equal(templatesRes.resourceTemplates[0]!.uriTemplate, "workspace:///{rootId}/{+path}");
+
+    await client.close();
+    await server.close();
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("MCP Protocol — Rootless workspace profile starts safely and handles read requests without crash", async () => {
+  const rootlessConfig: WorkspaceConfig = { roots: [] };
+
+  const server = createServer({
+    profile: "workspace",
+    workspaceConfig: rootlessConfig,
+  });
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "test-client", version: "1.0.0" });
+
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+  // Resource templates list works
+  const templatesRes = await client.listResourceTemplates();
+  assert.equal(templatesRes.resourceTemplates.length, 1);
+
+  // Read resource fails with sanitized error (no server crash or path leak)
+  await assert.rejects(
+    () => client.readResource({ uri: "workspace:///root-1/test.txt" }),
+    (err: any) => err.message.includes("No workspace roots configured") || err.message.includes("resource_not_found")
+  );
+
+  await client.close();
+  await server.close();
+});
+
+test("Resource URI — Round-trip matrix for special characters (#, ?, %, spaces, unicode, brackets, parentheses)", () => {
+  const testCases = [
+    { rootId: "root-1", relativePath: "docs/hello world.md" },
+    { rootId: "root-1", relativePath: "#tag/c#_doc.md" },
+    { rootId: "root-1", relativePath: "query?file.txt" },
+    { rootId: "root-1", relativePath: "report 100%.json" },
+    { rootId: "root-1", relativePath: "my [special] (file).ts" },
+    { rootId: "root-1", relativePath: "unicode_日本語/dátum.txt" },
+    { rootId: "root-2", relativePath: "deep/nested/path/to/file.txt" },
+  ];
+
+  for (const tc of testCases) {
+    const uri = createWorkspaceResourceUri(tc.rootId, tc.relativePath);
+    assert.ok(uri.startsWith("workspace:///"), `URI must start with workspace:///: ${uri}`);
+    // Ensure no unencoded # or ? in the URI string
+    const afterScheme = uri.slice("workspace:///".length);
+    assert.ok(!afterScheme.includes("?"), `URI must not contain raw query delimiter: ${uri}`);
+    assert.ok(!afterScheme.includes("#"), `URI must not contain raw fragment delimiter: ${uri}`);
+
+    const parsed = parseWorkspaceResourceUri(uri);
+    assert.equal(parsed.rootId, tc.rootId);
+    assert.equal(parsed.relativePath, tc.relativePath);
+  }
+});
+
+test("Resource URI — Windows-like URI attack attempts are rejected", () => {
+  const attacks = [
+    "workspace:///root-1/C:",
+    "workspace:///root-1/C:foo",
+    "workspace:///root-1/C:\\foo",
+    "workspace:///root-1/C:/foo",
+    "workspace:///root-1/\\\\server\\share",
+    "workspace:///root-1/\\\\?\\C:\\foo",
+    "workspace:///root-1/\\\\.\\device",
+  ];
+
+  for (const attack of attacks) {
+    assert.throws(
+      () => parseWorkspaceResourceUri(attack),
+      (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri",
+      `Expected rejection for Windows attack: ${attack}`
+    );
+  }
+});
+
+test("Resource URI — Root ID validation and injection prevention", () => {
+  // Reject path separators in rootId
+  assert.throws(
+    () => createWorkspaceResourceUri("root/1", "file.txt"),
+    (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri"
+  );
+  assert.throws(
+    () => createWorkspaceResourceUri("root\\1", "file.txt"),
+    (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri"
+  );
+
+  // Encoded slash in rootId
+  assert.throws(
+    () => parseWorkspaceResourceUri("workspace:///root%2F1/file.txt"),
+    (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri"
+  );
+  // Encoded backslash in rootId
+  assert.throws(
+    () => parseWorkspaceResourceUri("workspace:///root%5C1/file.txt"),
+    (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri"
+  );
+  // Traversal in rootId
+  assert.throws(
+    () => parseWorkspaceResourceUri("workspace:///../root-1/file.txt"),
+    (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri"
+  );
+  assert.throws(
+    () => parseWorkspaceResourceUri("workspace:///%2e%2e/file.txt"),
+    (err: any) => err instanceof WorkspaceSecurityError && err.code === "invalid_resource_uri"
+  );
+});
+
+test("Resource Service — Multi-byte UTF-8 character boundary limits", async () => {
+  const fixture = await createTestWorkspaceFixture();
+  try {
+    // 3-byte UTF-8 characters: '日' = E6 97 A5 (3 bytes)
+    // 3 x 3 = 9 bytes + 1 ASCII byte '!' = 10 bytes
+    const text10Bytes = "日曜日!";
+    const buffer10 = Buffer.from(text10Bytes, "utf-8");
+    assert.equal(buffer10.byteLength, 10);
+
+    await fs.writeFile(path.join(fixture.root1Dir, "multi.txt"), buffer10);
+
+    // Limit == 10 bytes => succeeds
+    const policy10 = createWorkspaceOperatorPolicy({ maxResourceBytes: 10 });
+    const res10 = await readWorkspaceResourceService(fixture.config, "workspace:///root-1/multi.txt", policy10);
+    assert.equal(res10.text, text10Bytes);
+    assert.equal(res10.sizeBytes, 10);
+
+    // Limit == 9 bytes => throws resource_too_large (multi-byte raw bytes exceed limit)
+    const policy9 = createWorkspaceOperatorPolicy({ maxResourceBytes: 9 });
+    await assert.rejects(
+      () => readWorkspaceResourceService(fixture.config, "workspace:///root-1/multi.txt", policy9),
+      (err: any) => err instanceof WorkspaceSecurityError && err.code === "resource_too_large"
+    );
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("MCP Protocol — Exact ResourceContents shape validation", async () => {
+  const fixture = await createTestWorkspaceFixture();
+  try {
+    await fs.writeFile(path.join(fixture.root1Dir, "schema.json"), '{"valid":true}', "utf-8");
+
+    const server = createServer({
+      profile: "workspace",
+      workspaceConfig: fixture.config,
+    });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+    const readRes = await client.readResource({ uri: "workspace:///root-1/schema.json" });
+
+    // Validate ResourceContents shape
+    assert.equal(readRes.contents.length, 1);
+    const item = readRes.contents[0] as any;
+    assert.equal(item.uri, "workspace:///root-1/schema.json");
+    assert.equal(item.mimeType, "application/json");
+    assert.equal(item.text, '{"valid":true}');
+
+    // Validate NO host path leaks in any property
+    const rawJson = JSON.stringify(readRes);
+    assert.ok(!rawJson.includes(fixture.root1Dir), "Response must not contain host absolute path");
+    assert.ok(!rawJson.includes("file://"), "Response must not contain file:// URI");
+
+    await client.close();
+    await server.close();
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});

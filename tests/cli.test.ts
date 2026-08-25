@@ -469,4 +469,59 @@ test("CLI Parser — workspace write operator policy CLI flags and environment v
   assert.ok(invalidEnvWrite.error?.includes("Invalid MCP_WORKSPACE_MAX_WRITE_BYTES"));
 });
 
+test("CLI Parser — workspace resource operator policy CLI flags and environment variables", () => {
+  // Default workspace policy
+  const defaultCfg = parseCliArgs([], {});
+  assert.equal(defaultCfg.workspacePolicy.maxResourceBytes, 1048576);
+
+  // CLI flag parsing
+  const cliCfg = parseCliArgs(["--workspace-max-resource-bytes=2097152"], {});
+  assert.equal(cliCfg.workspacePolicy.maxResourceBytes, 2097152);
+
+  // Space-separated CLI flag parsing
+  const spaceCfg = parseCliArgs(["--workspace-max-resource-bytes", "3145728"], {});
+  assert.equal(spaceCfg.workspacePolicy.maxResourceBytes, 3145728);
+
+  // Environment variable parsing
+  const envCfg = parseCliArgs([], { MCP_WORKSPACE_MAX_RESOURCE_BYTES: "524288" });
+  assert.equal(envCfg.workspacePolicy.maxResourceBytes, 524288);
+
+  // CLI flag overrides environment variable
+  const overrideCfg = parseCliArgs(["--workspace-max-resource-bytes=100000"], {
+    MCP_WORKSPACE_MAX_RESOURCE_BYTES: "500000",
+  });
+  assert.equal(overrideCfg.workspacePolicy.maxResourceBytes, 100000);
+
+  // Invalid CLI flags fail fast
+  const zeroRes = parseCliArgs(["--workspace-max-resource-bytes=0"], {});
+  assert.ok(zeroRes.error?.includes("Invalid --workspace-max-resource-bytes"));
+
+  const negRes = parseCliArgs(["--workspace-max-resource-bytes=-500"], {});
+  assert.ok(negRes.error?.includes("Invalid --workspace-max-resource-bytes"));
+
+  const highRes = parseCliArgs(["--workspace-max-resource-bytes=99999999"], {});
+  assert.ok(highRes.error?.includes("Invalid --workspace-max-resource-bytes"));
+
+  const nonIntRes = parseCliArgs(["--workspace-max-resource-bytes=abc"], {});
+  assert.ok(nonIntRes.error?.includes("Invalid --workspace-max-resource-bytes"));
+
+  // Duplicate CLI flag fails fast
+  const dupRes = parseCliArgs(
+    ["--workspace-max-resource-bytes=1024", "--workspace-max-resource-bytes=2048"],
+    {}
+  );
+  assert.ok(dupRes.error?.includes('Duplicate option specified: "--workspace-max-resource-bytes"'));
+
+  // Invalid environment variable fails fast
+  const invalidEnvRes = parseCliArgs([], { MCP_WORKSPACE_MAX_RESOURCE_BYTES: "not-an-int" });
+  assert.ok(invalidEnvRes.error?.includes("Invalid MCP_WORKSPACE_MAX_RESOURCE_BYTES"));
+
+  const zeroEnvRes = parseCliArgs([], { MCP_WORKSPACE_MAX_RESOURCE_BYTES: "0" });
+  assert.ok(zeroEnvRes.error?.includes("Invalid MCP_WORKSPACE_MAX_RESOURCE_BYTES"));
+
+  const highEnvRes = parseCliArgs([], { MCP_WORKSPACE_MAX_RESOURCE_BYTES: "6000000" });
+  assert.ok(highEnvRes.error?.includes("Invalid MCP_WORKSPACE_MAX_RESOURCE_BYTES"));
+});
+
+
 

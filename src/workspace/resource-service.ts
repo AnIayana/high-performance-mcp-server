@@ -109,23 +109,49 @@ export async function readWorkspaceResourceService(
     await _sizeRaceHookForTesting(resolved.resolvedPath);
   }
 
-  // 2. Read full file buffer
+  // 2. Bounded file reading (allocates at most effectiveMaxBytes + 1 bytes)
   let fileBuffer: Buffer;
+  let fileHandle: fs.FileHandle | undefined;
   try {
-    fileBuffer = await fs.readFile(resolved.resolvedPath);
+    fileHandle = await fs.open(resolved.resolvedPath, "r");
+    const boundedBufferSize = effectiveMaxBytes + 1;
+    const boundedBuffer = Buffer.allocUnsafe(boundedBufferSize);
+    let totalBytesRead = 0;
+
+    while (totalBytesRead < boundedBufferSize) {
+      const { bytesRead } = await fileHandle.read(
+        boundedBuffer,
+        totalBytesRead,
+        boundedBufferSize - totalBytesRead,
+        totalBytesRead
+      );
+      if (bytesRead === 0) {
+        break; // EOF reached
+      }
+      totalBytesRead += bytesRead;
+    }
+
+    // 3. Bound defense in depth (detects file growth beyond limit without unbounded allocation)
+    if (totalBytesRead > effectiveMaxBytes) {
+      throw new WorkspaceSecurityError(
+        "resource_too_large",
+        `Resource "${relativePath}" exceeds maximum allowed size of ${effectiveMaxBytes} bytes.`
+      );
+    }
+
+    fileBuffer = boundedBuffer.subarray(0, totalBytesRead);
   } catch (err) {
+    if (err instanceof WorkspaceSecurityError) {
+      throw err;
+    }
     throw new WorkspaceSecurityError(
       "resource_not_found",
       `Failed to read resource "${relativePath}" in root "${rootId}".`
     );
-  }
-
-  // 3. Bound defense in depth (in case file grew between stat and read)
-  if (fileBuffer.byteLength > effectiveMaxBytes) {
-    throw new WorkspaceSecurityError(
-      "resource_too_large",
-      `Resource "${relativePath}" (${fileBuffer.byteLength} bytes) exceeds maximum allowed size of ${effectiveMaxBytes} bytes.`
-    );
+  } finally {
+    if (fileHandle) {
+      await fileHandle.close().catch(() => {});
+    }
   }
 
   // 4. Strict NUL byte rejection (text only)

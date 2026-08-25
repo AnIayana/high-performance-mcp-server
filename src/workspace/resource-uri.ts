@@ -62,6 +62,13 @@ export function parseWorkspaceResourceUri(rawUri: string | URL): {
 } {
   const uriStr = typeof rawUri === "string" ? rawUri : rawUri.href;
 
+  if (uriStr.includes("\\")) {
+    throw new WorkspaceSecurityError(
+      "invalid_resource_uri",
+      "Backslash characters are forbidden in resource URIs."
+    );
+  }
+
   // Check for plain or percent-encoded dot segments (. or .. or %2e or %2e%2e) before URL normalization
   const pathPart = uriStr.replace(/^workspace:\/\/\/?/i, "");
   if (/(?:^|\/|\\)(?:\.\.|\.|\%2e\%2e|\%2e|\%2E\%2E|\%2E)(?:\/|\\|$)/i.test(pathPart)) {
@@ -158,6 +165,13 @@ export function parseWorkspaceResourceUri(rawUri: string | URL): {
       throw new WorkspaceSecurityError(
         "invalid_resource_uri",
         "Encoded path separators ('/' or '\\') are forbidden in resource URI segments."
+      );
+    }
+
+    if (decoded.includes(":") || /^[a-zA-Z]:/.test(decoded)) {
+      throw new WorkspaceSecurityError(
+        "invalid_resource_uri",
+        "Windows drive identifiers, colons, and alternate data streams are forbidden in resource URI segments."
       );
     }
 
