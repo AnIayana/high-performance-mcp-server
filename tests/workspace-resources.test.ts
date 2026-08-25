@@ -578,7 +578,14 @@ test("MCP Protocol — workspace_write profile exposes resource template and ret
     const content = readRes.contents[0] as any;
     assert.equal(content.text, "Write Profile Read");
 
-    // 3. Tool catalog has exactly 10 tools including edit_text_file and write_text_file
+    // 3. Workspace prompts remain available in the write-capable superset profile
+    const { prompts } = await client.listPrompts();
+    assert.deepEqual(
+      prompts.map((prompt) => prompt.name).sort(),
+      ["explore_workspace", "find_and_explain", "review_file", "trace_symbol"]
+    );
+
+    // 4. Tool catalog has exactly 10 tools including edit_text_file and write_text_file
     const { tools } = await client.listTools();
     assert.equal(tools.length, 10);
     const toolNames = tools.map((t) => t.name).sort();

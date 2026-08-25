@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-08-25
 
 ### Added
 
@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional in-memory conditional HTTP response cache for `fetch_url` (`--network-cache`, `MCP_NETWORK_CACHE_ENABLED`) utilizing `ETag`, `Last-Modified`, `If-None-Match`, `If-Modified-Since`, and HTTP 304 revalidation with bounded LRU storage and configurable limits (`--network-cache-max-size-bytes`, `--network-cache-max-entries`, `--network-cache-ttl-ms`).
 - Profile-aware server instruction guidance for safe network resource access, untrusted content boundaries, and operator egress restrictions.
 
+### Changed
+
+- Replaced the v0.1 `workspace://roots` static resource and `workspace://file/{rootId}{?path}` template with the canonical, profile-gated `workspace:///{rootId}/{+path}` (`workspace_text_file`) template. Existing resource clients must migrate their URIs; root discovery remains available through the `workspace_roots` tool.
+
 ### Security
 
 - Resource reads reuse the central workspace security resolver, enforcing strict containment inside configured `--root` directories and blocking symlink/junction escapes.
@@ -32,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace isolation and canonical parent directory containment verification preventing symlink and junction escape attacks during file creation and modification.
 - Atomic same-directory file writing strategy using temporary files (`.mcp-temp-<uuid>.tmp`), explicit filesystem sync (`fsync`), pre-rename race revalidation, and atomic `fs.rename` replacement.
 - Invariant preservation: standard `workspace` profile remains strictly read-only; mutation tools exist exclusively in `workspace_write` and `all` profiles.
-- Zero process execution, zero file deletion, zero directory removal, zero permission mutation (`chmod`), and zero arbitrary absolute path access.
+- No MCP-exposed process execution, file or directory deletion, arbitrary rename, permission mutation (`chmod`), or absolute-path access. Internal rename/unlink operations are restricted to atomic publication and temporary-file cleanup.
 - Multi-layered SSRF protection blocking loopback, private (RFC 1918), link-local, carrier-grade NAT, cloud metadata (`169.254.169.254`), IPv4-mapped IPv6 (`::ffff:x.x.x.x`), IPv6 transition ranges, and multicast destinations.
 - Connection-time authoritative DNS lookup hook preventing DNS rebinding during socket establishment.
 - Strict additive operator egress policy layer: operator configuration can never bypass built-in private IP, loopback, or cloud metadata protections.
