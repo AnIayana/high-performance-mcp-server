@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   EXPECTED_MCP_NAME,
   EXPECTED_PACKAGE_NAME,
@@ -14,6 +17,17 @@ import {
   decideReleaseAction,
   determineReleasePlan,
 } from "../scripts/release/verify-release-state.js";
+import {
+  isTransientNpmPropagationFailure,
+  publishMcpWithRetry,
+  type PublishAttemptResult,
+} from "../scripts/release/publish-mcp-with-retry.js";
+
+const testDir = path.dirname(fileURLToPath(import.meta.url));
+const releaseWorkflow = fs.readFileSync(
+  path.resolve(testDir, "..", ".github", "workflows", "release.yml"),
+  "utf8"
+);
 
 test("Release Automation — Strict SemVer format validation", () => {
   // Valid SemVer formats
@@ -221,4 +235,79 @@ test("Release Automation — Idempotency state machine decision logic", () => {
   assert.equal(completeReal.shouldPublishNpm, false);
   assert.equal(completeReal.shouldPublishMcpRegistry, false);
   assert.equal(completeReal.shouldCreateGitHubRelease, false);
+});
+
+test("Release Automation — MCP publish retries only transient npm propagation failures", async () => {
+  const transientFailure: PublishAttemptResult = {
+    exitCode: 1,
+    output:
+      "NPM package 'high-performance-mcp-server' exists, but version '0.2.0' was not found " +
+      "(status: 404). A newly published release can take a moment to appear on the registry.",
+  };
+  const attempts = [transientFailure, transientFailure, { exitCode: 0, output: "published" }];
+  const waits: number[] = [];
+
+  const result = await publishMcpWithRetry({
+    maxAttempts: 4,
+    delayMs: 25,
+    runAttempt: async () => attempts.shift()!,
+    wait: async (delayMs) => {
+      waits.push(delayMs);
+    },
+  });
+
+  assert.equal(result.attempts, 3);
+  assert.deepEqual(waits, [25, 25]);
+  assert.equal(isTransientNpmPropagationFailure(transientFailure.output), true);
+
+  let nonRetryableAttempts = 0;
+  await assert.rejects(
+    publishMcpWithRetry({
+      maxAttempts: 4,
+      delayMs: 0,
+      runAttempt: async () => {
+        nonRetryableAttempts++;
+        return { exitCode: 1, output: "OIDC authentication failed: unauthorized" };
+      },
+      wait: async () => {},
+    }),
+    /failed with exit code 1/
+  );
+  assert.equal(nonRetryableAttempts, 1);
+});
+
+test("Release Automation — MCP publish retry exhaustion fails closed", async () => {
+  const transientOutput =
+    "NPM package 'high-performance-mcp-server' version '0.2.0' was not found (status: 404).";
+  let attempts = 0;
+
+  await assert.rejects(
+    publishMcpWithRetry({
+      maxAttempts: 3,
+      delayMs: 0,
+      runAttempt: async () => {
+        attempts++;
+        return { exitCode: 1, output: transientOutput };
+      },
+      wait: async () => {},
+    }),
+    /after 3 attempts/
+  );
+  assert.equal(attempts, 3);
+});
+
+test("Release Automation — workflow verifies anonymous npm visibility before bounded MCP retry", () => {
+  const propagationStart = releaseWorkflow.indexOf("- name: Verify npm Package Propagation");
+  const propagationEnd = releaseWorkflow.indexOf(
+    "- name: Download & Verify Official MCP Publisher",
+    propagationStart
+  );
+  const propagationStep = releaseWorkflow.slice(propagationStart, propagationEnd);
+
+  assert.ok(propagationStart >= 0 && propagationEnd > propagationStart);
+  assert.match(propagationStep, /https:\/\/registry\.npmjs\.org/);
+  assert.match(propagationStep, /Cache-Control: no-cache/);
+  assert.match(propagationStep, /CONSECUTIVE_SUCCESSES/);
+  assert.doesNotMatch(propagationStep, /npm view/);
+  assert.match(releaseWorkflow, /publish-mcp-with-retry\.ts/);
 });
