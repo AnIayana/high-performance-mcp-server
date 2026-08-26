@@ -18,6 +18,7 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 - **Dual Transport Support**: Run seamlessly over standard input/output (`stdio`) or modern Streamable HTTP (`node:http` + `/mcp`).
 - **Profile-Aware Server Instructions**: Dynamic server instructions that guide connected LLMs on recommended workflows, tool sequencing, and safety boundaries based on the active profile.
 - **Modular MCP Prompts**: Reusable task prompts (`explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol`) exposed exclusively in `workspace`, `workspace_write`, and `all` profiles.
+- **MCP-Native Workspace Completions**: Autocompletes logical `rootId` values for every workspace prompt and the workspace resource template without enumerating files or exposing host paths.
 - **Safe-by-Default Tool Profiles**: Default `safe` profile exposes zero filesystem, network, or hardware inspection. Filesystem mutation and outbound network access require explicit `workspace_write`/`network` (or `all`) opt-in.
 - **Workspace Security & Host Path Privacy**: Secure allowlisted directory access with path traversal and symlink escape prevention, logical root mapping (`root-1`, `root-2`), bounded text operations, and binary file protection without exposing host absolute paths to clients or models. The `workspace` profile remains read-only; guarded mutation is isolated to `workspace_write` and `all`.
 - **Workspace Search v1**: Fast, bounded literal file and text search (`search_files`, `search_text`) with ignored directory defaults, bounded concurrency, coordinate mapping, and client cancellation.
@@ -123,6 +124,10 @@ When running in `workspace`, `workspace_write`, or `all` profile, the server exp
 
 > [!NOTE]
 > Prompt arguments are treated as bounded task data and escaped before being inserted into reusable MCP prompt templates. Prompts do **not** execute direct filesystem I/O themselves; actual file reading and searching is performed by the model using standard MCP tools and resources under strict root allowlist controls.
+
+### Workspace Root Completions
+
+Workspace-capable profiles advertise MCP's `completions` capability. Clients can request `completion/complete` suggestions for the `rootId` argument on all four workspace prompts and for the `rootId` variable in `workspace:///{rootId}/{+path}`. Suggestions contain only configured logical IDs such as `root-1`; they never enumerate files or reveal root names and absolute host paths. Profiles without workspace authority do not advertise completion support.
 
 ---
 

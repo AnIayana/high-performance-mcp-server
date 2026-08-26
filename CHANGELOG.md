@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP-native `completion/complete` suggestions for logical workspace `rootId` arguments across all workspace prompts and the `workspace:///{rootId}/{+path}` resource template, without filesystem enumeration or host-path disclosure.
+
 ### Fixed
 
 - Hardened release automation against npm-to-MCP Registry propagation races by requiring repeated anonymous public npm API visibility and retrying only the Registry's transient npm-version-not-found response.

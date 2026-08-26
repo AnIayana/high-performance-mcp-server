@@ -1,5 +1,7 @@
-import type { McpServer } from "@modelcontextprotocol/server";
+import { completable, type McpServer } from "@modelcontextprotocol/server";
+import * as z from "zod/v4";
 import type { ServerContext } from "../core/server-context.js";
+import { completeWorkspaceRootIds } from "../workspace/completion.js";
 
 export interface PromptMetadata {
   readonly name: string;
@@ -10,6 +12,17 @@ export interface PromptMetadata {
 export type PromptRegistrar = (server: McpServer, context?: ServerContext) => void;
 
 export const MAX_GENERATED_PROMPT_CHARS = 8000;
+
+/**
+ * Creates the shared prompt argument schema for logical workspace root IDs.
+ * Completion suggestions expose IDs only and never host paths or root names.
+ */
+export function createWorkspaceRootIdPromptSchema(context?: ServerContext) {
+  return completable(
+    z.string().max(128).describe("The ID of the allowed workspace root (e.g. root-1)"),
+    (value) => completeWorkspaceRootIds(context, value)
+  );
+}
 
 export type PromptDataKind =
   | "goal_data"

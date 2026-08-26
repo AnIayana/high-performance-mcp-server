@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import type { ServerContext } from "../core/server-context.js";
+import { completeWorkspaceRootIds } from "../workspace/completion.js";
 import { readWorkspaceResourceService } from "../workspace/resource-service.js";
 
 /**
@@ -26,7 +27,12 @@ export function registerResources(
   // MCP-Native Resource Template: workspace:///{rootId}/{+path}
   server.registerResource(
     "workspace_text_file",
-    new ResourceTemplate("workspace:///{rootId}/{+path}", { list: undefined }),
+    new ResourceTemplate("workspace:///{rootId}/{+path}", {
+      list: undefined,
+      complete: {
+        rootId: (value) => completeWorkspaceRootIds(context, value),
+      },
+    }),
     {
       title: "Workspace Text File",
       description: "Read an allowlisted UTF-8 text file from a configured workspace root.",
