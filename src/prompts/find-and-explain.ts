@@ -3,6 +3,7 @@ import * as z from "zod/v4";
 import type { ServerContext } from "../core/server-context.js";
 import {
   assertPromptTextLength,
+  createWorkspaceRootIdPromptSchema,
   formatUserDataBlock,
   type PromptMetadata,
   validatePromptRootId,
@@ -49,7 +50,7 @@ export default function registerFindAndExplainPrompt(
       title: promptMeta.title,
       description: promptMeta.description,
       argsSchema: z.object({
-        rootId: z.string().max(128).describe("The ID of the allowed workspace root (e.g. root-1)"),
+        rootId: createWorkspaceRootIdPromptSchema(context),
         query: z
           .string()
           .min(1)

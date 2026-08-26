@@ -553,6 +553,67 @@ test("MCP Protocol — workspace profile exposes resource template and handles r
   }
 });
 
+test("MCP Protocol — workspace prompts and resource template complete logical root IDs", async () => {
+  const fixture = await createTestWorkspaceFixture();
+  try {
+    const server = createServer({
+      profile: "workspace",
+      workspaceConfig: fixture.config,
+    });
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+
+    assert.ok(client.getServerCapabilities()?.completions);
+
+    for (const promptName of [
+      "explore_workspace",
+      "find_and_explain",
+      "review_file",
+      "trace_symbol",
+    ]) {
+      const result = await client.complete({
+        ref: { type: "ref/prompt", name: promptName },
+        argument: { name: "rootId", value: "root-" },
+      });
+      assert.deepEqual(result.completion, {
+        values: ["root-1", "root-2"],
+        total: 2,
+        hasMore: false,
+      });
+    }
+
+    const filteredPrompt = await client.complete({
+      ref: { type: "ref/prompt", name: "review_file" },
+      argument: { name: "rootId", value: "root-2" },
+    });
+    assert.deepEqual(filteredPrompt.completion.values, ["root-2"]);
+
+    const resourceResult = await client.complete({
+      ref: { type: "ref/resource", uri: "workspace:///{rootId}/{+path}" },
+      argument: { name: "rootId", value: "" },
+    });
+    assert.deepEqual(resourceResult.completion, {
+      values: ["root-1", "root-2"],
+      total: 2,
+      hasMore: false,
+    });
+
+    const serialized = JSON.stringify(resourceResult);
+    assert.equal(serialized.includes(fixture.root1Dir), false);
+    assert.equal(serialized.includes(fixture.root2Dir), false);
+    assert.equal(serialized.includes("Root 1"), false);
+    assert.equal(serialized.includes("Root 2"), false);
+
+    await client.close();
+    await server.close();
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
 test("MCP Protocol — workspace_write profile exposes resource template and retains mutation tools", async () => {
   const fixture = await createTestWorkspaceFixture();
   try {
@@ -670,14 +731,14 @@ test("MCP Protocol — Initialize capabilities across all profiles", async () =>
   const fixture = await createTestWorkspaceFixture();
   try {
     const profiles = [
-      { profile: "safe", hasResources: false },
-      { profile: "network", hasResources: false },
-      { profile: "diagnostics", hasResources: false },
-      { profile: "benchmark", hasResources: false },
-      { profile: "admin", hasResources: false },
-      { profile: "workspace", hasResources: true },
-      { profile: "workspace_write", hasResources: true },
-      { profile: "all", hasResources: true },
+      { profile: "safe", hasResources: false, hasCompletions: false },
+      { profile: "network", hasResources: false, hasCompletions: false },
+      { profile: "diagnostics", hasResources: false, hasCompletions: false },
+      { profile: "benchmark", hasResources: false, hasCompletions: false },
+      { profile: "admin", hasResources: false, hasCompletions: false },
+      { profile: "workspace", hasResources: true, hasCompletions: true },
+      { profile: "workspace_write", hasResources: true, hasCompletions: true },
+      { profile: "all", hasResources: true, hasCompletions: true },
     ] as const;
 
     for (const item of profiles) {
@@ -700,6 +761,18 @@ test("MCP Protocol — Initialize capabilities across all profiles", async () =>
           capabilities?.resources,
           undefined,
           `Profile ${item.profile} must NOT advertise resources capability`
+        );
+      }
+      if (item.hasCompletions) {
+        assert.ok(
+          capabilities?.completions,
+          `Profile ${item.profile} must advertise completions capability`
+        );
+      } else {
+        assert.equal(
+          capabilities?.completions,
+          undefined,
+          `Profile ${item.profile} must NOT advertise completions capability`
         );
       }
 
@@ -760,6 +833,16 @@ test("MCP Protocol — Rootless workspace profile starts safely and handles read
   // Resource templates list works
   const templatesRes = await client.listResourceTemplates();
   assert.equal(templatesRes.resourceTemplates.length, 1);
+
+  const completionRes = await client.complete({
+    ref: { type: "ref/resource", uri: "workspace:///{rootId}/{+path}" },
+    argument: { name: "rootId", value: "" },
+  });
+  assert.deepEqual(completionRes.completion, {
+    values: [],
+    total: 0,
+    hasMore: false,
+  });
 
   // Read resource fails with sanitized error (no server crash or path leak)
   await assert.rejects(

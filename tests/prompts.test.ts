@@ -7,6 +7,7 @@ import { buildFindAndExplainPrompt } from "../src/prompts/find-and-explain.js";
 import { buildReviewFilePrompt } from "../src/prompts/review-file.js";
 import { buildTraceSymbolPrompt } from "../src/prompts/trace-symbol.js";
 import { escapePromptData, MAX_GENERATED_PROMPT_CHARS } from "../src/prompts/types.js";
+import { completeWorkspaceRootIds } from "../src/workspace/completion.js";
 
 function createMockContext(): ServerContext {
   const workspace: WorkspaceConfig = {
@@ -30,6 +31,37 @@ test("Helper — escapePromptData XML character escaping", () => {
   const raw = `foo & bar <baz> "quoted" 'single'`;
   const escaped = escapePromptData(raw);
   assert.equal(escaped, `foo &amp; bar &lt;baz&gt; &quot;quoted&quot; &#39;single&#39;`);
+});
+
+test("Helper — workspace root completion returns prefix-matched logical IDs only", () => {
+  const context: ServerContext = {
+    profile: "workspace",
+    workspace: {
+      roots: [
+        {
+          id: "root-1",
+          name: "private-project-name",
+          path: "C:\\private\\project-one",
+          realPath: "C:\\private\\project-one",
+        },
+        {
+          id: "root-2",
+          name: "another-private-name",
+          path: "C:\\private\\project-two",
+          realPath: "C:\\private\\project-two",
+        },
+      ],
+    },
+  };
+
+  assert.deepEqual(completeWorkspaceRootIds(context, ""), ["root-1", "root-2"]);
+  assert.deepEqual(completeWorkspaceRootIds(context, "root-2"), ["root-2"]);
+  assert.deepEqual(completeWorkspaceRootIds(context, "missing"), []);
+  assert.deepEqual(completeWorkspaceRootIds({ profile: "workspace" }, ""), []);
+
+  const serialized = JSON.stringify(completeWorkspaceRootIds(context, ""));
+  assert.equal(serialized.includes("private-project-name"), false);
+  assert.equal(serialized.includes("C:\\private"), false);
 });
 
 test("Prompt Generator — explore_workspace prompt structure & goal injection", () => {
