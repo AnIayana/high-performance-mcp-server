@@ -20,12 +20,12 @@ export function countPrimes(
   }
 
   let count = 1; // 2 is prime
-  let lastReportTime = Date.now();
+  let lastReportTime = performance.now();
   let lastReportedProgress = 0;
 
   for (let i = 3; i <= limit; i += 2) {
     if (onProgress && i % PROGRESS_CHUNK_SIZE === 1) {
-      const now = Date.now();
+      const now = performance.now();
       if (now - lastReportTime >= PROGRESS_MIN_INTERVAL_MS) {
         lastReportTime = now;
         lastReportedProgress = i;

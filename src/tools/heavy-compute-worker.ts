@@ -40,40 +40,40 @@ export default function registerHeavyComputeWorkerTool(server: McpServer): void 
       }),
     },
     withToolMetrics("heavy_compute_worker", async ({ limit }, extra?: any) => {
+      const signal = extra?.signal;
+      const progressToken =
+        extra?.progressToken ?? extra?._meta?.progressToken ?? extra?.mcpReq?._meta?.progressToken;
+
+      let progressChain = Promise.resolve();
+      let isSettled = false;
+
+      const onProgress =
+        progressToken !== undefined && typeof extra?.sendNotification === "function"
+          ? (p: WorkerTaskProgress) => {
+              if (isSettled || signal?.aborted) return progressChain;
+              progressChain = progressChain.then(async () => {
+                if (isSettled || signal?.aborted) return;
+                try {
+                  await extra.sendNotification({
+                    method: "notifications/progress",
+                    params: {
+                      progressToken,
+                      progress: p.progress,
+                      total: p.total,
+                    },
+                  });
+                } catch {
+                  // Auxiliary progress notification delivery error ignored
+                }
+              });
+              return progressChain;
+            }
+          : undefined;
+
       try {
-        const signal = extra?.signal;
-        const progressToken =
-          extra?.progressToken ?? extra?._meta?.progressToken ?? extra?.mcpReq?._meta?.progressToken;
-
-        let progressChain = Promise.resolve();
-
-        const onProgress =
-          progressToken && typeof extra?.sendNotification === "function"
-            ? (p: WorkerTaskProgress) => {
-                progressChain = progressChain.then(async () => {
-                  try {
-                    await extra.sendNotification({
-                      method: "notifications/progress",
-                      params: {
-                        progressToken,
-                        progress: p.progress,
-                        total: p.total,
-                      },
-                    });
-                  } catch {
-                    // Auxiliary progress notification delivery error ignored
-                  }
-                });
-                return progressChain;
-              }
-            : undefined;
-
         const probeResult = await runWithEventLoopProbe(() =>
           executeWorkerTask("count_primes", { limit }, { signal, onProgress })
         );
-
-        // Guarantee all progress notifications are flushed before terminal response
-        await progressChain;
 
         const structured = {
           mode: "worker" as const,
@@ -114,6 +114,9 @@ export default function registerHeavyComputeWorkerTool(server: McpServer): void 
             },
           ],
         };
+      } finally {
+        isSettled = true;
+        await progressChain;
       }
     })
   );
