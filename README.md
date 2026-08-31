@@ -254,6 +254,27 @@ Server operators can set strict hard caps on the maximum allowed write or edit p
 - **Atomic Replacement Metadata**: Atomic replacement creates a new filesystem entry, preserving POSIX permission bits (`0755`, `0644`) where supported. Other OS-specific metadata (e.g. inode number, creation timestamp `ctime`, ACL inheritance) may not be portably preserved.
 - **Residual Concurrency Boundaries**: Pre-replace revalidation minimizes TOCTOU race conditions against untrusted MCP callers. However, a hostile local OS process with equivalent filesystem privileges executing concurrent writes in the microseconds after final validation may still race path-based operations.
 
+### Optional Client-Mediated Write Confirmation (Unreleased)
+
+Confirmation is **off by default**. Enable it for both mutation tools with the operator-only `--workspace-write-confirmation` flag, or `MCP_WORKSPACE_WRITE_CONFIRMATION=true` (`true`/`1`/`false`/`0`). The CLI flag enables confirmation even if the environment says `false`; tool arguments cannot disable it. No tools are added and profile access stays unchanged.
+
+```bash
+high-performance-mcp-server --profile=workspace_write --root=./project --workspace-write-confirmation
+```
+
+The server validates the target, then asks the client to show a form containing a `confirm` boolean. Only an accepted response with `confirm: true` proceeds. Decline, cancel, false, and malformed accepted content leave the file unchanged. No temporary file is created while approval is pending. The normal root, size, exact-edit, and SHA-256 checks still run after approval, including when a file changes during the prompt.
+
+The prompt identifies the operation and canonical logical `rootId`/relative path; it does not display file content, expected hashes, root names, or absolute host paths. Control and bidirectional formatting characters are escaped. Targets over 4,096 characters are refused instead of silently truncated. Response keys include the proposed arguments and resolved logical target so a changed proposal asks again.
+
+| Connection | Confirmation enabled |
+| :--- | :--- |
+| MCP `2026-07-28`, stdio or HTTP | Native `input_required` form elicitation |
+| Legacy MCP, stdio | SDK compatibility shim uses `elicitation/create` |
+| Legacy MCP, stateless HTTP | Refused: no reverse-request channel for approval |
+| Client without form elicitation | Refused without a mutation |
+
+With confirmation disabled, existing modern and legacy calls behave as before. Use a client that actually presents the form to a human: elicitation is a **client-mediated safeguard, not authentication or a security boundary against a malicious client**. The server cannot prove that a human approved a client-supplied response. Direct service-level embedding is also outside this MCP handler gate. For protocol details, see the [official SDK input-required guide](https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/servers/input-required.md).
+
 ---
 
 ## MCP Workspace Resources
@@ -378,6 +399,7 @@ Options:
   --root=<path>                  Allowlisted workspace root (repeatable, max 16)
   --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)
   --workspace-max-resource-bytes=<n> Operator hard cap for resource read size in bytes (1-5242880, default: 1048576)
+  --workspace-write-confirmation Require client-mediated confirmation before text write/edit operations
   --network-allow-host=<pattern> Allowlisted public hostname or *.domain pattern (repeatable, operator restriction)
   --network-deny-host=<pattern>  Denylisted hostname or *.domain pattern (repeatable, operator restriction)
   --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)
@@ -433,6 +455,7 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 | `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
+| `MCP_WORKSPACE_WRITE_CONFIRMATION` | `boolean` | `false` | Require client-mediated write/edit approval (`true`/`1`/`false`/`0`, unreleased) |
 | `MCP_NETWORK_ALLOW_HOSTS_JSON` | `string` | *(none)* | JSON array of allowed public host patterns (e.g. `["example.com","*.githubusercontent.com"]`) |
 | `MCP_NETWORK_DENY_HOSTS_JSON` | `string` | *(none)* | JSON array of denied host patterns (e.g. `["ads.example.com"]`) |
 | `MCP_NETWORK_HTTPS_ONLY` | `boolean` | `false` | Enforce HTTPS-only mode for all network requests (`true`/`1`/`false`/`0`) |

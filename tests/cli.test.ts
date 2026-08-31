@@ -170,6 +170,8 @@ test("CLI Helpers — getHelpText and getPackageVersion", () => {
   assert.ok(help.includes("workspace"));
   assert.ok(help.includes("--root="));
   assert.ok(help.includes("MCP_ROOTS_JSON"));
+  assert.ok(help.includes("--workspace-write-confirmation"));
+  assert.ok(help.includes("MCP_WORKSPACE_WRITE_CONFIRMATION"));
   assert.ok(help.includes("--list-tools"));
   assert.ok(help.includes("--network-allow-host"));
   assert.ok(help.includes("--network-deny-host"));
@@ -469,6 +471,31 @@ test("CLI Parser — workspace write operator policy CLI flags and environment v
   assert.ok(invalidEnvWrite.error?.includes("Invalid MCP_WORKSPACE_MAX_WRITE_BYTES"));
 });
 
+test("CLI Parser — workspace write confirmation is opt-in with strict CLI/env parsing", () => {
+  assert.equal(parseCliArgs([], {}).workspacePolicy.requireWriteConfirmation, false);
+  assert.equal(parseCliArgs(["--workspace-write-confirmation"], {}).workspacePolicy.requireWriteConfirmation, true);
+  for (const value of ["true", "1", " TRUE "]) {
+    const config = parseCliArgs([], { MCP_WORKSPACE_WRITE_CONFIRMATION: value });
+    assert.equal(config.error, undefined);
+    assert.equal(config.workspacePolicy.requireWriteConfirmation, true);
+  }
+  for (const value of ["false", "0", " FALSE ", "", "   "]) {
+    const config = parseCliArgs([], { MCP_WORKSPACE_WRITE_CONFIRMATION: value });
+    assert.equal(config.error, undefined);
+    assert.equal(config.workspacePolicy.requireWriteConfirmation, false);
+  }
+  const override = parseCliArgs(["--workspace-write-confirmation"], {
+    MCP_WORKSPACE_WRITE_CONFIRMATION: "false",
+  });
+  assert.equal(override.error, undefined);
+  assert.equal(override.workspacePolicy.requireWriteConfirmation, true);
+  assert.ok(parseCliArgs(["--workspace-write-confirmation", "--workspace-write-confirmation"], {}).error?.includes("Duplicate option"));
+  for (const value of ["yes", "2", "true,false"]) {
+    assert.ok(parseCliArgs([], { MCP_WORKSPACE_WRITE_CONFIRMATION: value }).error?.includes("Invalid MCP_WORKSPACE_WRITE_CONFIRMATION"));
+  }
+  assert.ok(parseCliArgs(["--workspace-write-confirmation=false"], {}).error?.includes("Unknown CLI option"));
+});
+
 test("CLI Parser — workspace resource operator policy CLI flags and environment variables", () => {
   // Default workspace policy
   const defaultCfg = parseCliArgs([], {});
@@ -522,6 +549,5 @@ test("CLI Parser — workspace resource operator policy CLI flags and environmen
   const highEnvRes = parseCliArgs([], { MCP_WORKSPACE_MAX_RESOURCE_BYTES: "6000000" });
   assert.ok(highEnvRes.error?.includes("Invalid MCP_WORKSPACE_MAX_RESOURCE_BYTES"));
 });
-
 
 

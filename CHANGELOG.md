@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - MCP-native `completion/complete` suggestions for logical workspace `rootId` arguments across all workspace prompts and the `workspace:///{rootId}/{+path}` resource template, without filesystem enumeration or host-path disclosure.
+- Opt-in, default-off client-mediated confirmation for `write_text_file` and `edit_text_file` via `--workspace-write-confirmation` / `MCP_WORKSPACE_WRITE_CONFIRMATION`. Uses native `input_required` on modern MCP and the legacy stdio elicitation shim; unsupported clients and legacy stateless HTTP refuse mutations. Existing write security checks, profile isolation, and the 20-tool registry are preserved.
 
 ### Fixed
 

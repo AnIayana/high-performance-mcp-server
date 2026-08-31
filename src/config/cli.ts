@@ -118,6 +118,7 @@ export function getHelpText(): string {
     "  --root=<path>                  Allowlisted workspace root (repeatable, max 16)",
     "  --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)",
     "  --workspace-max-resource-bytes=<n> Operator hard cap for resource read size in bytes (1-5242880, default: 1048576)",
+    "  --workspace-write-confirmation Require client-mediated confirmation before text write/edit operations",
     "  --network-allow-host=<pattern> Allowlisted public hostname or *.domain pattern (repeatable, operator restriction)",
     "  --network-deny-host=<pattern>  Denylisted hostname or *.domain pattern (repeatable, operator restriction)",
     "  --network-https-only           Enforce HTTPS-only mode for all network requests (operator restriction)",
@@ -147,6 +148,7 @@ export function getHelpText(): string {
     "  MCP_ROOTS_JSON                 JSON array of allowlisted workspace root paths (e.g. [\"/path/to/project\"])",
     "  MCP_WORKSPACE_MAX_WRITE_BYTES  Operator workspace write size cap in bytes override (1-5242880)",
     "  MCP_WORKSPACE_MAX_RESOURCE_BYTES Operator workspace resource read size cap in bytes override (1-5242880)",
+    "  MCP_WORKSPACE_WRITE_CONFIRMATION Require write/edit confirmation (true/1/false/0)",
     "  MCP_NETWORK_ALLOW_HOSTS_JSON   JSON array of allowed public hostname patterns (e.g. [\"example.com\",\"*.githubusercontent.com\"])",
     "  MCP_NETWORK_DENY_HOSTS_JSON    JSON array of denied hostname patterns (e.g. [\"ads.example.com\"])",
     "  MCP_NETWORK_HTTPS_ONLY         Enforce HTTPS-only mode (true/1/false/0)",
@@ -241,6 +243,9 @@ export function parseCliArgs(
   let cliWorkspaceMaxResourceBytes: number | undefined;
   let envWorkspaceMaxResourceBytes: number | undefined;
   let seenWorkspaceMaxResourceBytes = false;
+
+  let cliWorkspaceWriteConfirmation: boolean | undefined;
+  let envWorkspaceWriteConfirmation: boolean | undefined;
 
   // Network conditional cache accumulators
   let cliCacheEnabled: boolean | undefined;
@@ -357,6 +362,22 @@ export function parseCliArgs(
       );
     }
     envWorkspaceMaxResourceBytes = parsed;
+  }
+
+  if (
+    env.MCP_WORKSPACE_WRITE_CONFIRMATION !== undefined &&
+    env.MCP_WORKSPACE_WRITE_CONFIRMATION.trim().length > 0
+  ) {
+    const value = env.MCP_WORKSPACE_WRITE_CONFIRMATION.trim().toLowerCase();
+    if (value === "true" || value === "1") {
+      envWorkspaceWriteConfirmation = true;
+    } else if (value === "false" || value === "0") {
+      envWorkspaceWriteConfirmation = false;
+    } else {
+      return errorResult(
+        `Invalid MCP_WORKSPACE_WRITE_CONFIRMATION environment variable: "${env.MCP_WORKSPACE_WRITE_CONFIRMATION}". Must be true or false.`
+      );
+    }
   }
 
   // Network environment variables
@@ -496,6 +517,7 @@ export function parseCliArgs(
   let seenPort = false;
   let seenProfile = false;
   let seenListTools = false;
+  let seenWorkspaceWriteConfirmation = false;
   let seenHttpsOnly = false;
   let seenMaxResponseBytes = false;
   let seenMaxTimeoutMs = false;
@@ -533,6 +555,17 @@ export function parseCliArgs(
       }
       seenHttpsOnly = true;
       cliHttpsOnly = true;
+      continue;
+    }
+
+    if (arg === "--workspace-write-confirmation") {
+      if (seenWorkspaceWriteConfirmation) {
+        return errorResult(
+          `Duplicate option specified: "--workspace-write-confirmation". This option may only be specified once.`
+        );
+      }
+      seenWorkspaceWriteConfirmation = true;
+      cliWorkspaceWriteConfirmation = true;
       continue;
     }
 
@@ -827,9 +860,12 @@ export function parseCliArgs(
     cliWorkspaceMaxWriteBytes ?? envWorkspaceMaxWriteBytes ?? DEFAULT_MAX_WRITE_BYTES;
   const effectiveWorkspaceMaxResourceBytes =
     cliWorkspaceMaxResourceBytes ?? envWorkspaceMaxResourceBytes ?? DEFAULT_MAX_RESOURCE_BYTES;
+  const effectiveWorkspaceWriteConfirmation =
+    cliWorkspaceWriteConfirmation ?? envWorkspaceWriteConfirmation ?? false;
   const workspacePolicy = createWorkspaceOperatorPolicy({
     maxWriteBytes: effectiveWorkspaceMaxWriteBytes,
     maxResourceBytes: effectiveWorkspaceMaxResourceBytes,
+    requireWriteConfirmation: effectiveWorkspaceWriteConfirmation,
   });
 
   // Precedence resolution for network policy:
