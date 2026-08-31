@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `AbortSignal` request cancellation support across the worker thread pool (`WorkerPool.execute`, `executeWorkerTask`), enabling immediate removal of cancelled queued tasks and prompt termination and single replacement of busy worker threads running long CPU tasks.
+- Propagated MCP request `AbortSignal` to the `heavy_compute_worker` tool handler, allowing clients to abort long-running worker calculations promptly without waiting for the 30-second task timeout.
+
+### Security & Reliability
+
+- Preserved worker pool capacity and steady-state worker count invariants (`totalWorkers <= configuredWorkers`) during cancellation recovery.
+- Prevented unhandled rejections, listener leaks, and stale message handling from terminated worker threads.
+
 ## [0.3.0] - 2026-08-31
 
 ### Added

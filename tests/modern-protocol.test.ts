@@ -424,3 +424,91 @@ test("Modern MCP Integration — Network profile tools list", async () => {
     await serverInstance.close();
   }
 });
+
+test("Modern MCP Integration — heavy_compute_worker cancellation lifecycle", async () => {
+  const serverInstance = await createHttpTransportServer(0, "benchmark");
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+  );
+
+  const client = new Client(
+    {
+      name: "benchmark-test-client",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  try {
+    await client.connect(transport);
+
+    // 1. Client-mediated callTool rejection with pre-aborted signal
+    const immediateController = new AbortController();
+    immediateController.abort();
+
+    await assert.rejects(
+      async () => {
+        await client.callTool(
+          {
+            name: "heavy_compute_worker",
+            arguments: {
+              limit: 1000000,
+            },
+          },
+          { signal: immediateController.signal }
+        );
+      },
+      (err: Error) => {
+        assert.ok(err.name === "AbortError" || err.message.includes("aborted") || err.message.includes("cancelled"));
+        return true;
+      }
+    );
+
+    // 2. Direct server-side WorkerPool task cancellation lifecycle proof
+    const { executeWorkerTask, getWorkerPoolStats } = await import("../src/workers/pool.js");
+    const initialStats = getWorkerPoolStats();
+
+    const inFlightController = new AbortController();
+    const startTime = Date.now();
+    const taskPromise = executeWorkerTask(
+      "count_primes",
+      { limit: 100000000 },
+      { signal: inFlightController.signal }
+    );
+
+    // Abort while running
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    inFlightController.abort();
+
+    await assert.rejects(
+      async () => taskPromise,
+      (err: Error) => {
+        assert.ok(err.name === "AbortError" || err.message.includes("aborted") || err.message.includes("cancelled"));
+        return true;
+      }
+    );
+
+    const elapsed = Date.now() - startTime;
+    assert.ok(elapsed < 4000, `Worker task cancellation latency (${elapsed}ms) must settle promptly`);
+
+    // Verify SERVER-SIDE cancellation: worker thread was terminated and restartedWorkers counter increased
+    let replacementObserved = false;
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if (getWorkerPoolStats().restartedWorkers > initialStats.restartedWorkers) {
+        replacementObserved = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.ok(replacementObserved, "Server-side WorkerPool must observe worker termination and replacement upon task abort");
+  } finally {
+    await client.close();
+    await serverInstance.close();
+  }
+});
+
+
