@@ -4,6 +4,7 @@
 
 export interface CountPrimesPayload {
   limit: number;
+  enableProgress?: boolean;
 }
 
 export interface CountPrimesResult {
@@ -15,6 +16,13 @@ export interface WorkerRequest {
   id: number;
   type: "count_primes";
   payload: CountPrimesPayload;
+}
+
+export interface WorkerProgressMessage {
+  id: number;
+  type: "progress";
+  progress: number;
+  total: number;
 }
 
 export interface WorkerSuccessResponse {
@@ -34,3 +42,4 @@ export interface WorkerErrorResponse {
 }
 
 export type WorkerResponse = WorkerSuccessResponse | WorkerErrorResponse;
+export type WorkerMessage = WorkerResponse | WorkerProgressMessage;

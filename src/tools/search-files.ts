@@ -105,23 +105,30 @@ export default function registerSearchFilesTool(
     withToolMetrics(toolMeta.name, async (args, extra?: any) => {
       try {
         const signal = extra?.signal;
-        const progressToken = extra?.mcpReq?._meta?.progressToken;
+        const progressToken =
+          extra?.progressToken ?? extra?._meta?.progressToken ?? extra?.mcpReq?._meta?.progressToken;
 
-        const onProgress = progressToken && typeof extra?.sendNotification === "function"
-          ? async (scannedCount: number) => {
-              try {
-                await extra.sendNotification({
-                  method: "notifications/progress",
-                  params: {
-                    progressToken,
-                    progress: scannedCount,
-                  },
+        let progressChain = Promise.resolve();
+
+        const onProgress =
+          progressToken !== undefined && typeof extra?.sendNotification === "function"
+            ? (scannedCount: number) => {
+                progressChain = progressChain.then(async () => {
+                  try {
+                    await extra.sendNotification({
+                      method: "notifications/progress",
+                      params: {
+                        progressToken,
+                        progress: scannedCount,
+                      },
+                    });
+                  } catch {
+                    // Ignore progress delivery failure
+                  }
                 });
-              } catch {
-                // Ignore progress delivery failure
+                return progressChain;
               }
-            }
-          : undefined;
+            : undefined;
 
         const result = await searchFilesService(
           context?.workspace,
@@ -139,6 +146,9 @@ export default function registerSearchFilesTool(
             onProgress,
           }
         );
+
+        // Await all progress notifications before returning terminal tool result
+        await progressChain;
 
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

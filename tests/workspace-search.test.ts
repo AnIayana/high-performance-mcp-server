@@ -359,3 +359,84 @@ test("TEST 15 — path traversal rejection", async () => {
     fixture.cleanup();
   }
 });
+
+test("TEST 16 — Search final progress normalization matrix", async () => {
+  const fixture = createSearchFixture();
+  try {
+    // Case A: Scanned count less than 250 threshold
+    const progressA: number[] = [];
+    const resA = await searchFilesService(fixture.config, "root-1", "config", {
+      onProgress: (count) => {
+        progressA.push(count);
+      },
+    });
+    assert.ok(resA.scannedEntries > 0 && resA.scannedEntries < 250);
+    assert.deepEqual(progressA, [resA.scannedEntries], "Must emit exactly the final scanned count when < 250");
+
+    // Case B & C: Large directory fixtures with exact and non-exact multiples of 250
+    const largeTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-search-progress-matrix-"));
+    try {
+      const rootDir = path.join(largeTempDir, "root");
+      fs.mkdirSync(rootDir, { recursive: true });
+
+      // Create 503 dummy files
+      for (let i = 1; i <= 503; i++) {
+        fs.writeFileSync(path.join(rootDir, `file_${String(i).padStart(4, "0")}.txt`), `content ${i}`);
+      }
+
+      const customConfig: WorkspaceConfig = {
+        roots: [
+          {
+            id: "root-large",
+            name: "Large Root",
+            path: rootDir,
+            realPath: rootDir,
+          },
+        ],
+      };
+
+      // Case B: 503 files (not an exact multiple of 250) -> [250, 500, 503]
+      const progressB: number[] = [];
+      const resB = await searchFilesService(customConfig, "root-large", "nonexistent_query", {
+        maxFiles: 1000,
+        onProgress: (count) => {
+          progressB.push(count);
+        },
+      });
+      assert.equal(resB.scannedEntries, 503);
+      assert.deepEqual(progressB, [250, 500, 503], "Must emit periodic (250, 500) then terminal 503");
+
+      // Case C: Exact multiple of 250 (e.g. 500 files) -> [250, 500] (no duplicate 500)
+      fs.unlinkSync(path.join(rootDir, "file_0501.txt"));
+      fs.unlinkSync(path.join(rootDir, "file_0502.txt"));
+      fs.unlinkSync(path.join(rootDir, "file_0503.txt"));
+
+      const progressC: number[] = [];
+      const resC = await searchFilesService(customConfig, "root-large", "nonexistent_query", {
+        maxFiles: 1000,
+        onProgress: (count) => {
+          progressC.push(count);
+        },
+      });
+      assert.equal(resC.scannedEntries, 500);
+      assert.deepEqual(progressC, [250, 500], "Must emit [250, 500] without duplicate terminal 500");
+
+      // Case D: Zero-work search (empty subfolder) -> 0 progress events
+      const emptySubdir = path.join(rootDir, "empty_dir");
+      fs.mkdirSync(emptySubdir, { recursive: true });
+      const progressD: number[] = [];
+      const resD = await searchFilesService(customConfig, "root-large", "test", {
+        path: "empty_dir",
+        onProgress: (count) => {
+          progressD.push(count);
+        },
+      });
+      assert.equal(resD.scannedEntries, 0);
+      assert.equal(progressD.length, 0, "Zero-work search must emit 0 progress events");
+    } finally {
+      fs.rmSync(largeTempDir, { recursive: true, force: true });
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});

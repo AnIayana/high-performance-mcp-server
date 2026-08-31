@@ -1,6 +1,6 @@
 import { parentPort } from "node:worker_threads";
 import { countPrimes } from "./compute.js";
-import type { WorkerRequest, WorkerResponse } from "./types.js";
+import type { WorkerProgressMessage, WorkerRequest, WorkerResponse } from "./types.js";
 
 if (!parentPort) {
   throw new Error("compute.worker.ts must be spawned as a Worker Thread");
@@ -13,7 +13,19 @@ parentPort.on("message", (request: WorkerRequest) => {
 
   try {
     if (type === "count_primes") {
-      const result = countPrimes(payload.limit);
+      const onProgress = payload.enableProgress
+        ? (progress: number, total: number) => {
+            const progressMessage: WorkerProgressMessage = {
+              id,
+              type: "progress",
+              progress,
+              total,
+            };
+            parentPort?.postMessage(progressMessage);
+          }
+        : undefined;
+
+      const result = countPrimes(payload.limit, onProgress);
       const response: WorkerResponse = {
         id,
         ok: true,

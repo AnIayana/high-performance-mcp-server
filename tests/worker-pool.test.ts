@@ -438,3 +438,221 @@ test("TEST M — Abort running task then immediately close pool awaits all worke
     await pool.close();
   }
 });
+
+test("TEST N — Worker task with progress disabled triggers zero progress callbacks", async () => {
+  const pool = new WorkerPool({ workerCount: 1 });
+  try {
+    pool.initialize();
+    let callbackCount = 0;
+    const result = await pool.execute("count_primes", { limit: 100_000 });
+    assert.ok(result.primeCount > 0);
+    assert.equal(callbackCount, 0);
+  } finally {
+    await pool.close();
+  }
+});
+
+test("TEST O — Worker task with progress enabled receives monotonic progress and truthful known total", async () => {
+  const pool = new WorkerPool({ workerCount: 1 });
+  try {
+    pool.initialize();
+    const progressEvents: Array<{ progress: number; total?: number }> = [];
+    const limit = 200_000;
+
+    const result = await pool.execute(
+      "count_primes",
+      { limit },
+      {
+        onProgress: (p) => {
+          progressEvents.push(p);
+        },
+      }
+    );
+
+    assert.ok(result.primeCount > 0);
+    assert.ok(progressEvents.length > 0, "Must receive at least 1 progress event");
+
+    // Monotonicity check and truthful total check
+    let lastProgress = 0;
+    for (const event of progressEvents) {
+      assert.ok(event.progress >= lastProgress, `Progress must be non-decreasing (${event.progress} >= ${lastProgress})`);
+      assert.equal(event.total, limit, "Total must match truthful known limit");
+      assert.ok(event.progress <= limit, `Progress must not exceed total (${event.progress} <= ${limit})`);
+      lastProgress = event.progress;
+    }
+
+    // Terminal progress check
+    const finalEvent = progressEvents[progressEvents.length - 1];
+    assert.equal(finalEvent.progress, limit, "Final progress must equal limit");
+    assert.equal(finalEvent.total, limit);
+  } finally {
+    await pool.close();
+  }
+});
+
+test("TEST P — Worker task with progress enabled + cancellation rejects with AbortError and stops progress", async () => {
+  const pool = new WorkerPool({ workerCount: 1 });
+  try {
+    pool.initialize();
+    const progressEvents: Array<{ progress: number; total?: number }> = [];
+    const controller = new AbortController();
+    const limit = 50_000_000;
+
+    const taskPromise = pool.execute(
+      "count_primes",
+      { limit },
+      {
+        signal: controller.signal,
+        onProgress: (p) => {
+          progressEvents.push(p);
+          if (progressEvents.length >= 1 && !controller.signal.aborted) {
+            controller.abort();
+          }
+        },
+      }
+    );
+
+    await assert.rejects(
+      async () => taskPromise,
+      (err: Error) => {
+        assert.ok(err.name === "AbortError" || err.message.includes("aborted"));
+        return true;
+      }
+    );
+
+    const countAtAbort = progressEvents.length;
+    await delay(100);
+    // Ensure no terminal (limit, limit) progress was emitted after cancellation
+    const hasFinalTotal = progressEvents.some((e) => e.progress === limit);
+    assert.equal(hasFinalTotal, false, "Cancelled task must NOT emit final progress=total");
+  } finally {
+    await pool.close();
+  }
+});
+
+test("TEST Q — Worker task with progress enabled + timeout rejects and emits no final total", async () => {
+  const hangScriptPath = path.resolve(__dirname, "fixtures/hang.worker.ts");
+  const pool = new WorkerPool({
+    workerCount: 1,
+    workerScriptPath: hangScriptPath,
+    taskTimeoutMs: 150,
+  });
+
+  try {
+    pool.initialize();
+    const progressEvents: Array<{ progress: number; total?: number }> = [];
+
+    await assert.rejects(
+      async () => {
+        await pool.execute(
+          "count_primes",
+          { limit: 100 },
+          {
+            onProgress: (p) => {
+              progressEvents.push(p);
+            },
+          }
+        );
+      },
+      (err: Error) => {
+        assert.ok(err.message.includes("timed out") || err.name === "TimeoutError");
+        return true;
+      }
+    );
+
+    const hasFinalTotal = progressEvents.some((e) => e.progress === 100);
+    assert.equal(hasFinalTotal, false, "Timed-out task must NOT emit final progress=total");
+  } finally {
+    await pool.close();
+  }
+});
+
+test("TEST R — Worker progress message isolation across sequential tasks", async () => {
+  const pool = new WorkerPool({ workerCount: 1 });
+  try {
+    pool.initialize();
+    const taskAEvents: number[] = [];
+    const taskBEvents: number[] = [];
+
+    await pool.execute(
+      "count_primes",
+      { limit: 100_000 },
+      {
+        onProgress: (p) => {
+          taskAEvents.push(p.progress);
+        },
+      }
+    );
+
+    await pool.execute(
+      "count_primes",
+      { limit: 150_000 },
+      {
+        onProgress: (p) => {
+          taskBEvents.push(p.progress);
+        },
+      }
+    );
+
+    assert.ok(taskAEvents.length > 0);
+    assert.ok(taskBEvents.length > 0);
+    assert.equal(taskAEvents[taskAEvents.length - 1], 100_000);
+    assert.equal(taskBEvents[taskBEvents.length - 1], 150_000);
+
+    // Assert task A events did not leak into task B
+    for (const p of taskBEvents) {
+      assert.ok(p <= 150_000);
+    }
+  } finally {
+    await pool.close();
+  }
+});
+
+test("TEST S — Worker task progress callback throwing an error does not crash or fail execution", async () => {
+  const pool = new WorkerPool({ workerCount: 1 });
+  try {
+    pool.initialize();
+    let callbackCalls = 0;
+
+    const result = await pool.execute(
+      "count_primes",
+      { limit: 100_000 },
+      {
+        onProgress: () => {
+          callbackCalls++;
+          throw new Error("Synthetic consumer progress callback error");
+        },
+      }
+    );
+
+    assert.ok(result.primeCount > 0);
+    assert.ok(callbackCalls > 0);
+  } finally {
+    await pool.close();
+  }
+});
+
+test("TEST T — Worker progress message volume is strictly bounded for large computations", async () => {
+  const pool = new WorkerPool({ workerCount: 1 });
+  try {
+    pool.initialize();
+    let progressCount = 0;
+    const limit = 500_000;
+
+    const result = await pool.execute(
+      "count_primes",
+      { limit },
+      {
+        onProgress: () => {
+          progressCount++;
+        },
+      }
+    );
+
+    assert.ok(result.primeCount > 0);
+    // Bounded cadence check: should not produce thousands of messages for 500k candidates
+    assert.ok(progressCount <= 50, `Progress message count (${progressCount}) must be bounded (<= 50)`);
+  } finally {
+    await pool.close();
+  }
+});

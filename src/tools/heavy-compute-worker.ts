@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
-import { executeWorkerTask } from "../workers/pool.js";
+import { executeWorkerTask, type WorkerTaskProgress } from "../workers/pool.js";
 import { runWithEventLoopProbe } from "../workers/probe.js";
 import type { ToolMetadata } from "./types.js";
 
@@ -42,9 +42,38 @@ export default function registerHeavyComputeWorkerTool(server: McpServer): void 
     withToolMetrics("heavy_compute_worker", async ({ limit }, extra?: any) => {
       try {
         const signal = extra?.signal;
+        const progressToken =
+          extra?.progressToken ?? extra?._meta?.progressToken ?? extra?.mcpReq?._meta?.progressToken;
+
+        let progressChain = Promise.resolve();
+
+        const onProgress =
+          progressToken && typeof extra?.sendNotification === "function"
+            ? (p: WorkerTaskProgress) => {
+                progressChain = progressChain.then(async () => {
+                  try {
+                    await extra.sendNotification({
+                      method: "notifications/progress",
+                      params: {
+                        progressToken,
+                        progress: p.progress,
+                        total: p.total,
+                      },
+                    });
+                  } catch {
+                    // Auxiliary progress notification delivery error ignored
+                  }
+                });
+                return progressChain;
+              }
+            : undefined;
+
         const probeResult = await runWithEventLoopProbe(() =>
-          executeWorkerTask("count_primes", { limit }, { signal })
+          executeWorkerTask("count_primes", { limit }, { signal, onProgress })
         );
+
+        // Guarantee all progress notifications are flushed before terminal response
+        await progressChain;
 
         const structured = {
           mode: "worker" as const,
