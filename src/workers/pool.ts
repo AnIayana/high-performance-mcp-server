@@ -70,6 +70,8 @@ export class WorkerPool {
 
   private idleWorkers: ManagedWorker[] = [];
   private busyWorkers = new Map<number, ManagedWorker>();
+  private terminatingWorkers = new Set<ManagedWorker>();
+  private terminationPromises = new Map<number, Promise<number>>();
   private taskQueue: QueuedTask[] = [];
 
   private completedTasksCount = 0;
@@ -212,13 +214,16 @@ export class WorkerPool {
         managed.currentTask = undefined;
         this.busyWorkers.delete(workerId);
         managed.isTerminatedForCancellation = true;
+        this.terminatingWorkers.add(managed);
 
         task.reject(new DOMException("Worker task was aborted", "AbortError"));
 
         // Terminate worker to stop CPU-bound compute loop immediately
-        managed.worker.terminate().catch((err) => {
+        const termPromise = managed.worker.terminate().catch((err) => {
           log("warn", "worker_terminate_error", { workerId, error: String(err) });
+          return 1;
         });
+        this.terminationPromises.set(managed.id, termPromise);
 
         return;
       }
@@ -351,11 +356,14 @@ export class WorkerPool {
     }
 
     this.busyWorkers.delete(managed.id);
+    this.terminatingWorkers.add(managed);
 
     // Safely terminate worker; replacement will be handled by the 'exit' event
-    managed.worker.terminate().catch((err) => {
+    const termPromise = managed.worker.terminate().catch((err) => {
       log("warn", "worker_terminate_error", { workerId: managed.id, error: String(err) });
+      return 1;
     });
+    this.terminationPromises.set(managed.id, termPromise);
 
     // NOTE: DO NOT call replaceWorker() here to prevent double-replacement on exit.
   }
@@ -368,6 +376,8 @@ export class WorkerPool {
 
     // Idempotent removal from collections
     this.busyWorkers.delete(managed.id);
+    this.terminatingWorkers.delete(managed);
+    this.terminationPromises.delete(managed.id);
     const idleIndex = this.idleWorkers.indexOf(managed);
     if (idleIndex !== -1) {
       this.idleWorkers.splice(idleIndex, 1);
@@ -514,9 +524,9 @@ export class WorkerPool {
       }
     }
 
-    // Terminate all workers
-    const allWorkers = [...this.idleWorkers, ...Array.from(this.busyWorkers.values())];
-    const terminationPromises = allWorkers.map(async (mw) => {
+    // Terminate all active workers and await all terminations
+    const activeWorkers = [...this.idleWorkers, ...Array.from(this.busyWorkers.values())];
+    const terminationPromises = activeWorkers.map(async (mw) => {
       if (mw.timeoutHandle) clearTimeout(mw.timeoutHandle);
       const currentTask = mw.currentTask;
       if (currentTask) {
@@ -537,25 +547,35 @@ export class WorkerPool {
       }
     });
 
-    await Promise.all(terminationPromises);
+    const pendingTerminatingPromises = Array.from(this.terminationPromises.values());
+    await Promise.all([...terminationPromises, ...pendingTerminatingPromises]);
     this.idleWorkers = [];
     this.busyWorkers.clear();
+    this.terminatingWorkers.clear();
+    this.terminationPromises.clear();
   }
 }
 
 // Module-scope singleton worker pool
-const poolInstance = new WorkerPool();
+let poolInstance = new WorkerPool();
+
+function getActivePool(): WorkerPool {
+  if ((poolInstance as any).isClosing) {
+    poolInstance = new WorkerPool();
+  }
+  return poolInstance;
+}
 
 export function executeWorkerTask(
   type: "count_primes",
   payload: CountPrimesPayload,
   options?: ExecuteWorkerOptions
 ): Promise<CountPrimesResult> {
-  return poolInstance.execute(type, payload, options);
+  return getActivePool().execute(type, payload, options);
 }
 
 export function getWorkerPoolStats(): WorkerPoolStats {
-  return poolInstance.getStats();
+  return getActivePool().getStats();
 }
 
 export async function closeWorkerPool(): Promise<void> {

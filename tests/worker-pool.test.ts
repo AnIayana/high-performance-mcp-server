@@ -396,3 +396,45 @@ test("TEST L — WorkerPool close settles all queued and running tasks cleanly",
   await runningAssertion;
   await queuedAssertion;
 });
+
+test("TEST M — Abort running task then immediately close pool awaits all worker terminations", async () => {
+  const hangScriptPath = path.resolve(__dirname, "fixtures/hang.worker.ts");
+  const pool = new WorkerPool({
+    workerCount: 2,
+    workerScriptPath: hangScriptPath,
+    taskTimeoutMs: 10000,
+  });
+
+  try {
+    pool.initialize();
+    const controller = new AbortController();
+
+    const taskPromise = pool.execute("count_primes", { limit: 100 }, { signal: controller.signal });
+    const taskAssertion = assert.rejects(
+      async () => taskPromise,
+      (err: Error) => {
+        assert.ok(err.name === "AbortError" || err.message.includes("aborted"));
+        return true;
+      }
+    );
+
+    // Wait until worker is actively busy
+    await waitFor(() => pool.getStats().busyWorkers === 1);
+
+    // Abort running task
+    controller.abort();
+
+    // Immediately call close() before replacement / termination completes
+    await pool.close();
+
+    await taskAssertion;
+
+    const stats = pool.getStats();
+    assert.equal(stats.idleWorkers, 0);
+    assert.equal(stats.busyWorkers, 0);
+    assert.equal(stats.queuedTasks, 0);
+    assert.equal(stats.totalWorkers, 0);
+  } finally {
+    await pool.close();
+  }
+});
