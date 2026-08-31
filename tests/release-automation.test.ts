@@ -127,12 +127,12 @@ test("Release Automation — Release metadata invariant validation detects misma
 
 test("Release Automation — Dry-Run vs Real Release Tag Validation semantics", () => {
   // Case D: Dry-run does NOT require Git tag (requireTag: false)
-  const dryRunRes = runReleaseValidation({ version: "0.2.0", requireTag: false });
+  const dryRunRes = runReleaseValidation({ version: "0.3.0", requireTag: false });
   assert.equal(dryRunRes.valid, true);
   assert.equal(dryRunRes.errors.length, 0);
 
   // Dry-run still validates version matching
-  const dryRunMismatch = runReleaseValidation({ version: "0.3.0", requireTag: false });
+  const dryRunMismatch = runReleaseValidation({ version: "0.4.0", requireTag: false });
   assert.equal(dryRunMismatch.valid, false);
   assert.ok(dryRunMismatch.errors.some((e) => e.includes("package.json version mismatch")));
 

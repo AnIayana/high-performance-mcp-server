@@ -1,6 +1,6 @@
 {
   "name": "high-performance-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "High-performance, modular MCP v2 server with safe-by-default profiles, Streamable HTTP, stdio, worker threads, metrics, and LRU caching",
   "type": "module",
   "bin": {
