@@ -108,19 +108,25 @@ export class WorkerPool {
 
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
-    // When running from bundled dist/index.js -> dist/workers/compute.worker.js
-    const candidate1 = path.join(currentDir, "workers", "compute.worker.js");
-    if (fs.existsSync(candidate1)) return candidate1;
+    const candidates = [
+      // When running from src/workers/pool.ts (development / tests under tsx)
+      path.join(currentDir, "compute.worker.ts"),
+      // When running from dist/workers/compute.worker.js
+      path.join(currentDir, "compute.worker.js"),
+      // When running from src/index.ts (development under tsx)
+      path.join(currentDir, "workers", "compute.worker.ts"),
+      // When running from dist/index.js (production bundle)
+      path.join(currentDir, "workers", "compute.worker.js"),
+      // Relative to workspace root
+      path.resolve(process.cwd(), "dist/workers/compute.worker.js"),
+      path.resolve(process.cwd(), "src/workers/compute.worker.ts"),
+    ];
 
-    // When running from dist/workers/...
-    const candidate2 = path.join(currentDir, "compute.worker.js");
-    if (fs.existsSync(candidate2)) return candidate2;
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
 
-    // Relative to workspace
-    const candidate3 = path.resolve(process.cwd(), "dist/workers/compute.worker.js");
-    if (fs.existsSync(candidate3)) return candidate3;
-
-    return candidate1;
+    return candidates[0];
   }
 
   public initialize(): void {
