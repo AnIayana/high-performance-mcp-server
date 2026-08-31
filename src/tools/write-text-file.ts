@@ -1,8 +1,14 @@
-import type { McpServer } from "@modelcontextprotocol/server";
+import type {
+  McpServer,
+  ServerContext as McpServerContext,
+  CallToolResult,
+  InputRequiredResult,
+} from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
-import { writeTextFileService } from "../workspace/write-service.js";
+import { requireWorkspaceWriteConfirmation } from "../workspace/write-confirmation.js";
+import { resolveWritePathWithinRoot, writeTextFileService } from "../workspace/write-service.js";
 import type { ToolMetadata } from "./types.js";
 
 export const toolMeta: ToolMetadata = {
@@ -50,8 +56,33 @@ export default function registerWriteTextFileTool(
         previousSha256: z.string().optional(),
       }),
     },
-    withToolMetrics(toolMeta.name, async (args) => {
+    withToolMetrics(toolMeta.name, async (args, mcpContext?: McpServerContext): Promise<CallToolResult | InputRequiredResult> => {
       try {
+        if (context?.workspacePolicy?.requireWriteConfirmation) {
+          const target = await resolveWritePathWithinRoot(
+            context.workspace, args.rootId, args.path, args.mode === "create"
+          );
+          const confirmationResult = requireWorkspaceWriteConfirmation(
+            {
+              operation: args.mode,
+              rootId: target.root.id,
+              path: target.relativeToRoot,
+              approvalKeyMaterial: {
+                tool: toolMeta.name,
+                rootId: args.rootId,
+                path: args.path,
+                mode: args.mode,
+                content: args.content,
+                expectedSha256: args.mode === "overwrite" ? args.expectedSha256 : undefined,
+              },
+            },
+            mcpContext?.mcpReq.inputResponses
+          );
+          if (confirmationResult) {
+            return confirmationResult;
+          }
+        }
+
         const result = await writeTextFileService(context?.workspace, {
           rootId: args.rootId,
           path: args.path,

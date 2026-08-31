@@ -1,8 +1,14 @@
-import type { McpServer } from "@modelcontextprotocol/server";
+import type {
+  McpServer,
+  ServerContext as McpServerContext,
+  CallToolResult,
+  InputRequiredResult,
+} from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
-import { editTextFileService } from "../workspace/write-service.js";
+import { requireWorkspaceWriteConfirmation } from "../workspace/write-confirmation.js";
+import { editTextFileService, resolveWritePathWithinRoot } from "../workspace/write-service.js";
 import type { ToolMetadata } from "./types.js";
 
 export const toolMeta: ToolMetadata = {
@@ -55,8 +61,32 @@ export default function registerEditTextFileTool(
         previousSha256: z.string(),
       }),
     },
-    withToolMetrics(toolMeta.name, async (args) => {
+    withToolMetrics(toolMeta.name, async (args, mcpContext?: McpServerContext): Promise<CallToolResult | InputRequiredResult> => {
       try {
+        if (context?.workspacePolicy?.requireWriteConfirmation) {
+          const target = await resolveWritePathWithinRoot(
+            context.workspace, args.rootId, args.path, false
+          );
+          const confirmationResult = requireWorkspaceWriteConfirmation(
+            {
+              operation: "edit",
+              rootId: target.root.id,
+              path: target.relativeToRoot,
+              approvalKeyMaterial: {
+                tool: toolMeta.name,
+                rootId: args.rootId,
+                path: args.path,
+                expectedSha256: args.expectedSha256,
+                edits: args.edits,
+              },
+            },
+            mcpContext?.mcpReq.inputResponses
+          );
+          if (confirmationResult) {
+            return confirmationResult;
+          }
+        }
+
         const result = await editTextFileService(context?.workspace, {
           rootId: args.rootId,
           path: args.path,

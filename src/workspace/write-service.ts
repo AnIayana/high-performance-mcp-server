@@ -19,11 +19,13 @@ export const SHA256_HEX_REGEX = /^[a-f0-9]{64}$/;
 export interface WorkspaceOperatorPolicy {
   readonly maxWriteBytes: number;
   readonly maxResourceBytes: number;
+  readonly requireWriteConfirmation: boolean;
 }
 
 export const DEFAULT_WORKSPACE_OPERATOR_POLICY: WorkspaceOperatorPolicy = Object.freeze({
   maxWriteBytes: DEFAULT_MAX_WRITE_BYTES,
   maxResourceBytes: DEFAULT_MAX_RESOURCE_BYTES,
+  requireWriteConfirmation: false,
 });
 
 /**
@@ -42,9 +44,12 @@ export function createWorkspaceOperatorPolicy(
       ? Math.max(MIN_RESOURCE_BYTES, Math.min(HARD_MAX_RESOURCE_BYTES, policy.maxResourceBytes))
       : DEFAULT_MAX_RESOURCE_BYTES;
 
+  const requireWriteConfirmation = policy?.requireWriteConfirmation === true;
+
   return Object.freeze({
     maxWriteBytes,
     maxResourceBytes,
+    requireWriteConfirmation,
   });
 }
 
