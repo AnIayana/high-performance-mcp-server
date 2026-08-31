@@ -39,37 +39,53 @@ export default function registerHeavyComputeWorkerTool(server: McpServer): void 
           .describe("Event loop blocking delay measured by 20ms probe timer"),
       }),
     },
-    withToolMetrics("heavy_compute_worker", async ({ limit }) => {
-      const probeResult = await runWithEventLoopProbe(() =>
-        executeWorkerTask("count_primes", { limit })
-      );
+    withToolMetrics("heavy_compute_worker", async ({ limit }, extra?: any) => {
+      try {
+        const signal = extra?.signal;
+        const probeResult = await runWithEventLoopProbe(() =>
+          executeWorkerTask("count_primes", { limit }, { signal })
+        );
 
-      const structured = {
-        mode: "worker" as const,
-        limit: probeResult.result.limit,
-        primeCount: probeResult.result.primeCount,
-        computeDurationMs: probeResult.computeDurationMs,
-        eventLoopProbeDelayMs: probeResult.eventLoopProbeDelayMs,
-      };
+        const structured = {
+          mode: "worker" as const,
+          limit: probeResult.result.limit,
+          primeCount: probeResult.result.primeCount,
+          computeDurationMs: probeResult.computeDurationMs,
+          eventLoopProbeDelayMs: probeResult.eventLoopProbeDelayMs,
+        };
 
-      const textSummary = [
-        "=== Heavy Compute Result (Worker Thread Pool) ===",
-        `Mode: Worker Thread (Asynchronous Offload)`,
-        `Limit: ${structured.limit.toLocaleString()}`,
-        `Primes Found: ${structured.primeCount.toLocaleString()}`,
-        `Compute Duration: ${structured.computeDurationMs}ms`,
-        `Event Loop Probe Delay: ${structured.eventLoopProbeDelayMs}ms (RESPONSIVE)`,
-      ].join("\n");
+        const textSummary = [
+          "=== Heavy Compute Result (Worker Thread Pool) ===",
+          `Mode: Worker Thread (Asynchronous Offload)`,
+          `Limit: ${structured.limit.toLocaleString()}`,
+          `Primes Found: ${structured.primeCount.toLocaleString()}`,
+          `Compute Duration: ${structured.computeDurationMs}ms`,
+          `Event Loop Probe Delay: ${structured.eventLoopProbeDelayMs}ms (RESPONSIVE)`,
+        ].join("\n");
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: textSummary,
-          },
-        ],
-        structuredContent: structured,
-      };
+        return {
+          content: [
+            {
+              type: "text",
+              text: textSummary,
+            },
+          ],
+          structuredContent: structured,
+        };
+      } catch (error) {
+        if (error instanceof Error && (error.name === "AbortError" || error.message.includes("aborted"))) {
+          throw error;
+        }
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `heavy_compute_worker error: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ],
+        };
+      }
     })
   );
 }

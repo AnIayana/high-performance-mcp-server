@@ -424,3 +424,50 @@ test("Modern MCP Integration — Network profile tools list", async () => {
     await serverInstance.close();
   }
 });
+
+test("Modern MCP Integration — heavy_compute_worker cancellation lifecycle", async () => {
+  const serverInstance = await createHttpTransportServer(0, "benchmark");
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+  );
+
+  const client = new Client(
+    {
+      name: "benchmark-test-client",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  try {
+    await client.connect(transport);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      async () => {
+        await client.callTool(
+          {
+            name: "heavy_compute_worker",
+            arguments: {
+              limit: 5000000,
+            },
+          },
+          { signal: controller.signal }
+        );
+      },
+      (err: Error) => {
+        assert.ok(err.name === "AbortError" || err.message.includes("aborted") || err.message.includes("cancelled"));
+        return true;
+      }
+    );
+  } finally {
+    await client.close();
+    await serverInstance.close();
+  }
+});
+
+

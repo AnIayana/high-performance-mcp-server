@@ -32,9 +32,16 @@ export interface WorkerPoolOptions {
   maxQueueSize?: number;
 }
 
+export interface ExecuteWorkerOptions {
+  signal?: AbortSignal;
+}
+
 interface QueuedTask {
   id: number;
   request: WorkerRequest;
+  signal?: AbortSignal;
+  abortListener?: () => void;
+  isSettled: boolean;
   resolve: (res: CountPrimesResult) => void;
   reject: (err: Error) => void;
 }
@@ -44,6 +51,7 @@ interface ManagedWorker {
   worker: Worker;
   currentTask?: QueuedTask;
   timeoutHandle?: NodeJS.Timeout;
+  isTerminatedForCancellation?: boolean;
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 50;
@@ -167,6 +175,53 @@ export class WorkerPool {
     return managed;
   }
 
+  private handleTaskAbort(task: QueuedTask): void {
+    if (task.isSettled) return;
+    task.isSettled = true;
+
+    if (task.signal && task.abortListener) {
+      task.signal.removeEventListener("abort", task.abortListener);
+      task.abortListener = undefined;
+    }
+
+    // 1. Check if task is still in queue
+    const queueIndex = this.taskQueue.indexOf(task);
+    if (queueIndex !== -1) {
+      this.taskQueue.splice(queueIndex, 1);
+      log("info", "worker_queued_task_aborted", { taskId: task.id });
+      task.reject(new DOMException("Worker task was aborted", "AbortError"));
+      return;
+    }
+
+    // 2. Check if task is actively running on a busy worker
+    for (const [workerId, managed] of this.busyWorkers.entries()) {
+      if (managed.currentTask === task) {
+        log("info", "worker_running_task_aborted", { taskId: task.id, workerId });
+
+        if (managed.timeoutHandle) {
+          clearTimeout(managed.timeoutHandle);
+          managed.timeoutHandle = undefined;
+        }
+
+        managed.currentTask = undefined;
+        this.busyWorkers.delete(workerId);
+        managed.isTerminatedForCancellation = true;
+
+        task.reject(new DOMException("Worker task was aborted", "AbortError"));
+
+        // Terminate worker to stop CPU-bound compute loop immediately
+        managed.worker.terminate().catch((err) => {
+          log("warn", "worker_terminate_error", { workerId, error: String(err) });
+        });
+
+        return;
+      }
+    }
+
+    // If not found in queue or busy workers, reject anyway for safety
+    task.reject(new DOMException("Worker task was aborted", "AbortError"));
+  }
+
   private handleWorkerMessage(managed: ManagedWorker, response: WorkerResponse): void {
     if (managed.timeoutHandle) {
       clearTimeout(managed.timeoutHandle);
@@ -175,8 +230,14 @@ export class WorkerPool {
 
     const currentTask = managed.currentTask;
     if (!currentTask) {
-      // Received response without active task
+      // Received response without active task (e.g. from cancelled worker before termination completed)
       return;
+    }
+
+    // Clean up abort listener
+    if (currentTask.signal && currentTask.abortListener) {
+      currentTask.signal.removeEventListener("abort", currentTask.abortListener);
+      currentTask.abortListener = undefined;
     }
 
     // Response ID validation
@@ -188,9 +249,12 @@ export class WorkerPool {
       });
 
       this.failedTasksCount++;
-      currentTask.reject(
-        new Error(`Worker response ID mismatch: expected task ${currentTask.id}, received ${response.id}`)
-      );
+      if (!currentTask.isSettled) {
+        currentTask.isSettled = true;
+        currentTask.reject(
+          new Error(`Worker response ID mismatch: expected task ${currentTask.id}, received ${response.id}`)
+        );
+      }
       managed.currentTask = undefined;
       this.busyWorkers.delete(managed.id);
 
@@ -204,15 +268,18 @@ export class WorkerPool {
     managed.currentTask = undefined;
     this.busyWorkers.delete(managed.id);
 
-    if (response.ok) {
-      this.completedTasksCount++;
-      currentTask.resolve(response.result);
-    } else {
-      this.failedTasksCount++;
-      const error = new Error(response.error.message);
-      error.name = response.error.name;
-      if (response.error.stack) error.stack = response.error.stack;
-      currentTask.reject(error);
+    if (!currentTask.isSettled) {
+      currentTask.isSettled = true;
+      if (response.ok) {
+        this.completedTasksCount++;
+        currentTask.resolve(response.result);
+      } else {
+        this.failedTasksCount++;
+        const error = new Error(response.error.message);
+        error.name = response.error.name;
+        if (response.error.stack) error.stack = response.error.stack;
+        currentTask.reject(error);
+      }
     }
 
     if (!this.isClosing) {
@@ -236,10 +303,17 @@ export class WorkerPool {
       this.idleWorkers.splice(idleIndex, 1);
     }
 
-    // Reject active task once (exit event won't double-fail it because currentTask is cleared)
-    if (managed.currentTask) {
-      this.failedTasksCount++;
-      managed.currentTask.reject(new Error(`Worker ${managed.id} encountered an unhandled error: ${error.message}`));
+    const currentTask = managed.currentTask;
+    if (currentTask) {
+      if (currentTask.signal && currentTask.abortListener) {
+        currentTask.signal.removeEventListener("abort", currentTask.abortListener);
+        currentTask.abortListener = undefined;
+      }
+      if (!currentTask.isSettled) {
+        currentTask.isSettled = true;
+        this.failedTasksCount++;
+        currentTask.reject(new Error(`Worker ${managed.id} encountered an unhandled error: ${error.message}`));
+      }
       managed.currentTask = undefined;
     }
 
@@ -257,8 +331,16 @@ export class WorkerPool {
       timeoutMs: this.taskTimeoutMs,
     });
 
-    if (managed.currentTask) {
-      managed.currentTask.reject(new Error(`Task timed out after ${this.taskTimeoutMs}ms`));
+    const currentTask = managed.currentTask;
+    if (currentTask) {
+      if (currentTask.signal && currentTask.abortListener) {
+        currentTask.signal.removeEventListener("abort", currentTask.abortListener);
+        currentTask.abortListener = undefined;
+      }
+      if (!currentTask.isSettled) {
+        currentTask.isSettled = true;
+        currentTask.reject(new Error(`Task timed out after ${this.taskTimeoutMs}ms`));
+      }
       managed.currentTask = undefined;
     }
 
@@ -285,14 +367,25 @@ export class WorkerPool {
       this.idleWorkers.splice(idleIndex, 1);
     }
 
-    // If worker exited unexpectedly without prior error/timeout handler, fail task once
-    if (managed.currentTask) {
-      this.failedTasksCount++;
-      managed.currentTask.reject(new Error(`Worker ${managed.id} exited unexpectedly with code ${code}`));
+    const currentTask = managed.currentTask;
+    if (currentTask) {
+      if (currentTask.signal && currentTask.abortListener) {
+        currentTask.signal.removeEventListener("abort", currentTask.abortListener);
+        currentTask.abortListener = undefined;
+      }
+      if (!currentTask.isSettled) {
+        currentTask.isSettled = true;
+        this.failedTasksCount++;
+        currentTask.reject(new Error(`Worker ${managed.id} exited unexpectedly with code ${code}`));
+      }
       managed.currentTask = undefined;
     }
 
-    log("warn", "worker_exited", { workerId: managed.id, code });
+    log("warn", "worker_exited", {
+      workerId: managed.id,
+      code,
+      isCancellation: Boolean(managed.isTerminatedForCancellation),
+    });
 
     // CANONICAL SINGLE POINT OF REPLACEMENT
     if (!this.isClosing) {
@@ -313,6 +406,14 @@ export class WorkerPool {
 
     if (!managed || !task) return;
 
+    // Check if task was aborted just before dispatch
+    if (task.signal?.aborted) {
+      this.idleWorkers.push(managed);
+      this.handleTaskAbort(task);
+      this.dispatchNext();
+      return;
+    }
+
     managed.currentTask = task;
     this.busyWorkers.set(managed.id, managed);
 
@@ -323,9 +424,17 @@ export class WorkerPool {
     managed.worker.postMessage(task.request);
   }
 
-  public async execute(type: "count_primes", payload: CountPrimesPayload): Promise<CountPrimesResult> {
+  public async execute(
+    type: "count_primes",
+    payload: CountPrimesPayload,
+    options?: ExecuteWorkerOptions
+  ): Promise<CountPrimesResult> {
     if (this.isClosing) {
       throw new Error("Worker pool is shutting down and cannot accept new tasks.");
+    }
+
+    if (options?.signal?.aborted) {
+      throw new DOMException("Worker task was aborted", "AbortError");
     }
 
     if (!this.isInitialized) {
@@ -344,12 +453,23 @@ export class WorkerPool {
     };
 
     return new Promise<CountPrimesResult>((resolve, reject) => {
-      this.taskQueue.push({
+      const task: QueuedTask = {
         id: taskId,
         request,
+        signal: options?.signal,
+        isSettled: false,
         resolve,
         reject,
-      });
+      };
+
+      if (options?.signal) {
+        task.abortListener = () => {
+          this.handleTaskAbort(task);
+        };
+        options.signal.addEventListener("abort", task.abortListener, { once: true });
+      }
+
+      this.taskQueue.push(task);
       this.dispatchNext();
     });
   }
@@ -376,15 +496,33 @@ export class WorkerPool {
     // Reject queued tasks
     while (this.taskQueue.length > 0) {
       const task = this.taskQueue.shift();
-      task?.reject(new Error("Worker pool is closing."));
+      if (task) {
+        if (task.signal && task.abortListener) {
+          task.signal.removeEventListener("abort", task.abortListener);
+          task.abortListener = undefined;
+        }
+        if (!task.isSettled) {
+          task.isSettled = true;
+          task.reject(new Error("Worker pool is closing."));
+        }
+      }
     }
 
     // Terminate all workers
     const allWorkers = [...this.idleWorkers, ...Array.from(this.busyWorkers.values())];
     const terminationPromises = allWorkers.map(async (mw) => {
       if (mw.timeoutHandle) clearTimeout(mw.timeoutHandle);
-      if (mw.currentTask) {
-        mw.currentTask.reject(new Error("Worker pool terminated."));
+      const currentTask = mw.currentTask;
+      if (currentTask) {
+        if (currentTask.signal && currentTask.abortListener) {
+          currentTask.signal.removeEventListener("abort", currentTask.abortListener);
+          currentTask.abortListener = undefined;
+        }
+        if (!currentTask.isSettled) {
+          currentTask.isSettled = true;
+          currentTask.reject(new Error("Worker pool terminated."));
+        }
+        mw.currentTask = undefined;
       }
       try {
         await mw.worker.terminate();
@@ -402,8 +540,12 @@ export class WorkerPool {
 // Module-scope singleton worker pool
 const poolInstance = new WorkerPool();
 
-export function executeWorkerTask(type: "count_primes", payload: CountPrimesPayload): Promise<CountPrimesResult> {
-  return poolInstance.execute(type, payload);
+export function executeWorkerTask(
+  type: "count_primes",
+  payload: CountPrimesPayload,
+  options?: ExecuteWorkerOptions
+): Promise<CountPrimesResult> {
+  return poolInstance.execute(type, payload, options);
 }
 
 export function getWorkerPoolStats(): WorkerPoolStats {
