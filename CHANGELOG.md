@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Hardened release automation against npm-to-MCP Registry propagation races by requiring repeated anonymous public npm API visibility and retrying only the Registry's transient npm-version-not-found response.
+- Resolved development-only esbuild advisory GHSA-g7r4-m6w7-qqqr with a `tsup`-scoped override to esbuild 0.28.2; runtime dependencies and the package version are unchanged.
 
 ## [0.2.0] - 2026-08-25
 

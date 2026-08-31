@@ -33,6 +33,12 @@ npm ci
 
 All quality gates (`typecheck`, `test`, `build`, `security:package`, `smoke:package`) must pass before submitting a pull request.
 
+### Temporary build dependency override
+
+`package.json` overrides only `tsup`'s esbuild dependency to `0.28.2` because tsup 8.5.1 still requests `^0.27.0`, which includes versions affected by [GHSA-g7r4-m6w7-qqqr](https://github.com/evanw/esbuild/security/advisories/GHSA-g7r4-m6w7-qqqr). This is a development-only dependency; the advisory concerns esbuild's Windows development server, not the MCP HTTP transport.
+
+Remove this override once tsup supports a patched esbuild version directly. After updating the lockfile, verify a clean `npm ci`, `npm ls esbuild`, full `npm audit`, and all quality gates on Ubuntu, macOS, and Windows before merging.
+
 ---
 
 ## 3. Tool Contribution Conventions

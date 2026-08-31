@@ -66,6 +66,11 @@
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   },
+  "overrides": {
+    "tsup": {
+      "esbuild": "0.28.2"
+    }
+  },
   "engines": {
     "node": ">=22.0.0"
   }
