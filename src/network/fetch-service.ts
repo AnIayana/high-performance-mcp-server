@@ -22,6 +22,7 @@ import {
   MAX_REDIRECTS,
   validateAndParseUrl,
 } from "./policy.js";
+import { PACKAGE_VERSION } from "../generated/build-meta.js";
 import {
   type FetchUrlCacheStatus,
   type FetchUrlOptions,
@@ -30,7 +31,7 @@ import {
   type SafeDnsResolver,
 } from "./types.js";
 
-const DEFAULT_USER_AGENT = "high-performance-mcp-server/0.2.0";
+const DEFAULT_USER_AGENT = `high-performance-mcp-server/${PACKAGE_VERSION}`;
 const DEFAULT_ACCEPT_HEADER =
   "text/html, text/plain, application/json, application/xml, text/xml, application/xhtml+xml, application/javascript, text/javascript, application/yaml, text/yaml, text/markdown, text/csv;q=0.9, */*;q=0.1";
 

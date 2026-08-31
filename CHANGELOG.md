@@ -5,17 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-08-31
 
 ### Added
 
-- MCP-native `completion/complete` suggestions for logical workspace `rootId` arguments across all workspace prompts and the `workspace:///{rootId}/{+path}` resource template, without filesystem enumeration or host-path disclosure.
-- Opt-in, default-off client-mediated confirmation for `write_text_file` and `edit_text_file` via `--workspace-write-confirmation` / `MCP_WORKSPACE_WRITE_CONFIRMATION`. Uses native `input_required` on modern MCP and the legacy stdio elicitation shim; unsupported clients and legacy stateless HTTP refuse mutations. Existing write security checks, profile isolation, and the 20-tool registry are preserved.
+- MCP-native `completion/complete` suggestions for logical workspace `rootId` arguments across all workspace prompts (`explore_workspace`, `find_and_explain`, `review_file`, `trace_symbol`) and the `workspace:///{rootId}/{+path}` resource template, without filesystem enumeration or host-path disclosure.
+- Opt-in, default-off client-mediated confirmation for `write_text_file` and `edit_text_file` via `--workspace-write-confirmation` / `MCP_WORKSPACE_WRITE_CONFIRMATION`. Uses native `input_required` on modern MCP 2026-07-28 and the legacy stdio elicitation shim; unsupported clients and legacy stateless HTTP refuse mutations safely.
 
-### Fixed
+### Security
+
+- Workspace write confirmation is strictly client-mediated and does not replace server-side authentication, authorization, or filesystem protections. All authoritative mutation invariants (strict root boundary confinement, atomic no-clobber creation, optimistic `expectedSha256` concurrency checks, transactional edits, and size caps) are fully re-evaluated upon approval.
+
+### Fixed & Maintenance
 
 - Hardened release automation against npm-to-MCP Registry propagation races by requiring repeated anonymous public npm API visibility and retrying only the Registry's transient npm-version-not-found response.
-- Resolved development-only esbuild advisory GHSA-g7r4-m6w7-qqqr with a `tsup`-scoped override to esbuild 0.28.2; runtime dependencies and the package version are unchanged.
+- Updated GitHub Actions workflow runtime actions (`actions/checkout`, `actions/setup-node`) pinned to exact immutable commit SHAs.
+- Resolved development-only esbuild advisory GHSA-g7r4-m6w7-qqqr with a `tsup`-scoped override to esbuild 0.28.2; runtime dependencies and package version are unchanged.
 
 ## [0.2.0] - 2026-08-25
 

@@ -4,10 +4,10 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 
 ---
 
-## Project Status: Public Preview (v0.2.0)
+## Project Status: Public Preview (v0.3.0)
 
 > [!NOTE]
-> **Status**: `0.2.0` Public Preview.
+> **Status**: `0.3.0` Public Preview.
 > This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
 
 ---
@@ -455,7 +455,7 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 | `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
-| `MCP_WORKSPACE_WRITE_CONFIRMATION` | `boolean` | `false` | Require client-mediated write/edit approval (`true`/`1`/`false`/`0`, unreleased) |
+| `MCP_WORKSPACE_WRITE_CONFIRMATION` | `boolean` | `false` | Require client-mediated write/edit approval (`true`/`1`/`false`/`0`) |
 | `MCP_NETWORK_ALLOW_HOSTS_JSON` | `string` | *(none)* | JSON array of allowed public host patterns (e.g. `["example.com","*.githubusercontent.com"]`) |
 | `MCP_NETWORK_DENY_HOSTS_JSON` | `string` | *(none)* | JSON array of denied host patterns (e.g. `["ads.example.com"]`) |
 | `MCP_NETWORK_HTTPS_ONLY` | `boolean` | `false` | Enforce HTTPS-only mode for all network requests (`true`/`1`/`false`/`0`) |
