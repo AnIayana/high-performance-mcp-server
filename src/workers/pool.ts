@@ -8,6 +8,7 @@ import { log } from "../core/logger.js";
 import type {
   CountPrimesPayload,
   CountPrimesResult,
+  WorkerMessage,
   WorkerRequest,
   WorkerResponse,
 } from "./types.js";
@@ -32,8 +33,14 @@ export interface WorkerPoolOptions {
   maxQueueSize?: number;
 }
 
+export interface WorkerTaskProgress {
+  readonly progress: number;
+  readonly total?: number;
+}
+
 export interface ExecuteWorkerOptions {
-  signal?: AbortSignal;
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: WorkerTaskProgress) => void | Promise<void>;
 }
 
 interface QueuedTask {
@@ -41,6 +48,7 @@ interface QueuedTask {
   request: WorkerRequest;
   signal?: AbortSignal;
   abortListener?: () => void;
+  onProgress?: (progress: WorkerTaskProgress) => void | Promise<void>;
   isSettled: boolean;
   resolve: (res: CountPrimesResult) => void;
   reject: (err: Error) => void;
@@ -165,8 +173,8 @@ export class WorkerPool {
       worker,
     };
 
-    worker.on("message", (response: WorkerResponse) => {
-      this.handleWorkerMessage(managed, response);
+    worker.on("message", (message: WorkerMessage) => {
+      this.handleWorkerMessage(managed, message);
     });
 
     worker.on("error", (error: Error) => {
@@ -185,43 +193,48 @@ export class WorkerPool {
 
   private handleTaskAbort(task: QueuedTask): void {
     if (task.isSettled) return;
+
     task.isSettled = true;
 
+    // Clean up abort listener
     if (task.signal && task.abortListener) {
       task.signal.removeEventListener("abort", task.abortListener);
       task.abortListener = undefined;
     }
 
-    // 1. Check if task is still in queue
-    const queueIndex = this.taskQueue.indexOf(task);
-    if (queueIndex !== -1) {
-      this.taskQueue.splice(queueIndex, 1);
-      log("info", "worker_queued_task_aborted", { taskId: task.id });
+    // 1. Check if task is still in queue (not dispatched to worker yet)
+    const queueIdx = this.taskQueue.indexOf(task);
+    if (queueIdx !== -1) {
+      this.taskQueue.splice(queueIdx, 1);
       task.reject(new DOMException("Worker task was aborted", "AbortError"));
       return;
     }
 
-    // 2. Check if task is actively running on a busy worker
+    // 2. Check if task is actively executing on a busy worker
     for (const [workerId, managed] of this.busyWorkers.entries()) {
       if (managed.currentTask === task) {
-        log("info", "worker_running_task_aborted", { taskId: task.id, workerId });
-
         if (managed.timeoutHandle) {
           clearTimeout(managed.timeoutHandle);
           managed.timeoutHandle = undefined;
         }
 
+        // Detach task from worker and remove from active busy map
         managed.currentTask = undefined;
         this.busyWorkers.delete(workerId);
-        managed.isTerminatedForCancellation = true;
-        this.terminatingWorkers.add(managed);
 
+        // Mark worker as explicitly terminating to prevent duplicate replacement or handling
+        managed.isTerminatedForCancellation = true;
+
+        // Reject task promise immediately with AbortError
         task.reject(new DOMException("Worker task was aborted", "AbortError"));
 
-        // Terminate worker to stop CPU-bound compute loop immediately
+        log("info", "worker_terminated_cancellation", { workerId });
+
+        // Track terminating worker and its terminate() promise so close() awaits it
+        this.terminatingWorkers.add(managed);
         const termPromise = managed.worker.terminate().catch((err) => {
           log("warn", "worker_terminate_error", { workerId, error: String(err) });
-          return 1;
+          return 0;
         });
         this.terminationPromises.set(managed.id, termPromise);
 
@@ -233,16 +246,36 @@ export class WorkerPool {
     task.reject(new DOMException("Worker task was aborted", "AbortError"));
   }
 
-  private handleWorkerMessage(managed: ManagedWorker, response: WorkerResponse): void {
+  private handleWorkerMessage(managed: ManagedWorker, message: WorkerMessage): void {
+    const currentTask = managed.currentTask;
+    if (!currentTask) {
+      // Received message without active task (e.g. from cancelled worker before termination completed)
+      return;
+    }
+
+    // Handle progress notification message
+    if ("type" in message && message.type === "progress") {
+      // Task correlation & status guard: progress must match active task ID and task must not be settled
+      if (message.id === currentTask.id && !currentTask.isSettled && currentTask.onProgress) {
+        try {
+          const res = currentTask.onProgress({
+            progress: message.progress,
+            total: message.total,
+          });
+          if (res && typeof (res as Promise<void>).catch === "function") {
+            (res as Promise<void>).catch(() => {});
+          }
+        } catch {
+          // Auxiliary progress callback failure must not fail task execution
+        }
+      }
+      return;
+    }
+
+    // Terminal response handling
     if (managed.timeoutHandle) {
       clearTimeout(managed.timeoutHandle);
       managed.timeoutHandle = undefined;
-    }
-
-    const currentTask = managed.currentTask;
-    if (!currentTask) {
-      // Received response without active task (e.g. from cancelled worker before termination completed)
-      return;
     }
 
     // Clean up abort listener
@@ -250,6 +283,8 @@ export class WorkerPool {
       currentTask.signal.removeEventListener("abort", currentTask.abortListener);
       currentTask.abortListener = undefined;
     }
+
+    const response = message as WorkerResponse;
 
     // Response ID validation
     if (response.id !== currentTask.id) {
@@ -462,10 +497,14 @@ export class WorkerPool {
     }
 
     const taskId = ++this.taskIdCounter;
+    const finalPayload: CountPrimesPayload = options?.onProgress
+      ? { ...payload, enableProgress: true }
+      : payload;
+
     const request: WorkerRequest = {
       id: taskId,
       type,
-      payload,
+      payload: finalPayload,
     };
 
     return new Promise<CountPrimesResult>((resolve, reject) => {
@@ -473,6 +512,7 @@ export class WorkerPool {
         id: taskId,
         request,
         signal: options?.signal,
+        onProgress: options?.onProgress,
         isSettled: false,
         resolve,
         reject,

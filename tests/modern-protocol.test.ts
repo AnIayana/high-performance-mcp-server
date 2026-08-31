@@ -511,4 +511,213 @@ test("Modern MCP Integration — heavy_compute_worker cancellation lifecycle", a
   }
 });
 
+test("Modern MCP Protocol — Native Progress Normalization & Coverage (Search & Heavy Compute)", async () => {
+  const fixture = createModernWorkspaceFixture();
+  const workspaceConfig = await resolveWorkspaceConfig([fixture.tempDir]);
+
+  // 1. HTTP transport tool execution & schema compliance
+  const serverInstance = await createHttpTransportServer(0, "all", workspaceConfig);
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+  );
+
+  const client = new Client(
+    {
+      name: "progress-test-client",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  try {
+    await client.connect(transport);
+
+    // Call search_files via HTTP client
+    const searchFilesResult = await client.callTool({
+      name: "search_files",
+      arguments: {
+        rootId: "root-1",
+        query: "guide",
+      },
+    });
+    assert.equal(Boolean(searchFilesResult.isError), false);
+    const searchFilesText = getTextContent(searchFilesResult.content[0]);
+    assert.ok(searchFilesText.includes("guide.txt"));
+
+    // Call search_text via HTTP client
+    const searchTextResult = await client.callTool({
+      name: "search_text",
+      arguments: {
+        rootId: "root-1",
+        query: "alpha77",
+      },
+    });
+    assert.equal(Boolean(searchTextResult.isError), false);
+    const searchText = getTextContent(searchTextResult.content[0]);
+    assert.ok(searchText.includes("alpha77"));
+
+    // Call heavy_compute_worker via HTTP client
+    const computeResult = await client.callTool({
+      name: "heavy_compute_worker",
+      arguments: {
+        limit: 100_000,
+      },
+    });
+    assert.equal(Boolean(computeResult.isError), false);
+    const computeText = getTextContent(computeResult.content[0]);
+    assert.ok(computeText.includes("Primes Found"));
+  } finally {
+    await client.close();
+    await serverInstance.close();
+  }
+
+  // 2. Direct MCP tool handler progress notification contract verification
+  const { McpServer } = await import("@modelcontextprotocol/server");
+  const { default: registerSearchFilesTool } = await import("../src/tools/search-files.js");
+  const { default: registerSearchTextTool } = await import("../src/tools/search-text.js");
+  const { default: registerHeavyComputeWorkerTool } = await import("../src/tools/heavy-compute-worker.js");
+  const { closeWorkerPool } = await import("../src/workers/pool.js");
+
+  try {
+    const testServer = new McpServer({ name: "progress-test", version: "1.0.0" });
+    registerSearchFilesTool(testServer, { workspace: workspaceConfig });
+    registerSearchTextTool(testServer, { workspace: workspaceConfig });
+    registerHeavyComputeWorkerTool(testServer);
+
+    const registered = (testServer as any)._registeredTools;
+    const searchFilesHandler = registered["search_files"].handler;
+    const searchTextHandler = registered["search_text"].handler;
+    const workerHandler = registered["heavy_compute_worker"].handler;
+
+    // A. search_files with string progressToken
+    const searchFilesNotifications: any[] = [];
+    const searchFilesToolRes = await searchFilesHandler(
+      { rootId: "root-1", query: "guide", path: "." },
+      {
+        progressToken: "tok-search-files-1",
+        sendNotification: async (n: any) => {
+          searchFilesNotifications.push(n);
+        },
+      }
+    );
+    assert.ok(searchFilesToolRes);
+    assert.ok(searchFilesNotifications.length > 0, "search_files must emit progress notification");
+    for (const n of searchFilesNotifications) {
+      assert.equal(n.method, "notifications/progress");
+      assert.equal(n.params.progressToken, "tok-search-files-1");
+      assert.ok(n.params.progress > 0);
+      assert.equal(n.params.total, undefined, "Search progress must omit total");
+    }
+
+    // B. search_text with numeric progressToken
+    const searchTextNotifications: any[] = [];
+    const searchTextToolRes = await searchTextHandler(
+      { rootId: "root-1", query: "alpha77", path: "." },
+      {
+        progressToken: 7788,
+        sendNotification: async (n: any) => {
+          searchTextNotifications.push(n);
+        },
+      }
+    );
+    assert.ok(searchTextToolRes);
+    assert.ok(searchTextNotifications.length > 0, "search_text must emit progress notification");
+    for (const n of searchTextNotifications) {
+      assert.equal(n.method, "notifications/progress");
+      assert.equal(n.params.progressToken, 7788);
+      assert.ok(n.params.progress > 0);
+      assert.equal(n.params.total, undefined, "Search text progress must omit total");
+    }
+
+    // C. heavy_compute_worker with numeric progressToken
+    const workerNotifications: any[] = [];
+    const workerLimit = 250_000;
+    const workerToolRes = await workerHandler(
+      { limit: workerLimit },
+      {
+        progressToken: 12345,
+        sendNotification: async (n: any) => {
+          workerNotifications.push(n);
+        },
+      }
+    );
+    assert.ok(workerToolRes);
+    assert.ok(workerNotifications.length > 0, "heavy_compute_worker must emit progress notifications");
+
+    let lastP = 0;
+    for (const n of workerNotifications) {
+      assert.equal(n.method, "notifications/progress");
+      assert.equal(n.params.progressToken, 12345);
+      assert.ok(n.params.progress >= lastP, `Monotonic progress: ${n.params.progress} >= ${lastP}`);
+      assert.equal(n.params.total, workerLimit, "Worker progress total must match truthful limit");
+      assert.ok(n.params.progress <= workerLimit);
+      lastP = n.params.progress;
+    }
+
+    const finalNotification = workerNotifications[workerNotifications.length - 1];
+    assert.equal(finalNotification.params.progress, workerLimit, "Terminal progress must equal limit");
+    assert.equal(finalNotification.params.total, workerLimit);
+
+    // D. Ordering check: Zero progress notifications arrive after tool handler resolves
+    const countAtResolution = workerNotifications.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      workerNotifications.length,
+      countAtResolution,
+      "Zero progress notifications may arrive after tool resolution"
+    );
+
+    // E. heavy_compute_worker WITHOUT progressToken emits 0 notifications
+    const emptyNotifications: any[] = [];
+    const noTokenRes = await workerHandler(
+      { limit: 100_000 },
+      {
+        sendNotification: async (n: any) => {
+          emptyNotifications.push(n);
+        },
+      }
+    );
+    assert.ok(noTokenRes);
+    assert.equal(emptyNotifications.length, 0, "Without progressToken, zero notifications emitted");
+
+    // F. heavy_compute_worker with in-flight cancellation
+    const abortNotifications: any[] = [];
+    const abortController = new AbortController();
+    const cancelTaskPromise = workerHandler(
+      { limit: 50_000_000 },
+      {
+        progressToken: "tok-cancel",
+        signal: abortController.signal,
+        sendNotification: async (n: any) => {
+          abortNotifications.push(n);
+          if (abortNotifications.length >= 1 && !abortController.signal.aborted) {
+            abortController.abort();
+          }
+        },
+      }
+    );
+
+    await assert.rejects(
+      async () => cancelTaskPromise,
+      (err: Error) => {
+        assert.ok(err.name === "AbortError" || err.message.includes("aborted"));
+        return true;
+      }
+    );
+
+    const countAtAbort = abortNotifications.length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      abortNotifications.length,
+      countAtAbort,
+      "Zero progress notifications may arrive after cancellation"
+    );
+  } finally {
+    await closeWorkerPool();
+    fixture.cleanup();
+  }
+});
+
 

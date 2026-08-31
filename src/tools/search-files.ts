@@ -103,26 +103,36 @@ export default function registerSearchFilesTool(
       }),
     },
     withToolMetrics(toolMeta.name, async (args, extra?: any) => {
-      try {
-        const signal = extra?.signal;
-        const progressToken = extra?.mcpReq?._meta?.progressToken;
+      const signal = extra?.signal;
+      const progressToken =
+        extra?.progressToken ?? extra?._meta?.progressToken ?? extra?.mcpReq?._meta?.progressToken;
 
-        const onProgress = progressToken && typeof extra?.sendNotification === "function"
-          ? async (scannedCount: number) => {
-              try {
-                await extra.sendNotification({
-                  method: "notifications/progress",
-                  params: {
-                    progressToken,
-                    progress: scannedCount,
-                  },
-                });
-              } catch {
-                // Ignore progress delivery failure
-              }
+      let progressChain = Promise.resolve();
+      let isSettled = false;
+
+      const onProgress =
+        progressToken !== undefined && typeof extra?.sendNotification === "function"
+          ? (scannedCount: number) => {
+              if (isSettled || signal?.aborted) return progressChain;
+              progressChain = progressChain.then(async () => {
+                if (isSettled || signal?.aborted) return;
+                try {
+                  await extra.sendNotification({
+                    method: "notifications/progress",
+                    params: {
+                      progressToken,
+                      progress: scannedCount,
+                    },
+                  });
+                } catch {
+                  // Ignore progress delivery failure
+                }
+              });
+              return progressChain;
             }
           : undefined;
 
+      try {
         const result = await searchFilesService(
           context?.workspace,
           args.rootId,
@@ -157,6 +167,9 @@ export default function registerSearchFilesTool(
             },
           ],
         };
+      } finally {
+        isSettled = true;
+        await progressChain;
       }
     })
   );

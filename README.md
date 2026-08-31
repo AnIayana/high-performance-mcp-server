@@ -176,6 +176,7 @@ The `workspace` profile provides bounded, read-only search tools:
    - Filters by kind (`file`, `directory`, `all`), case sensitivity, and start path.
    - Skips common build/vendor directories (`.git`, `node_modules`, `.next`, `dist`, `build`, `target`, etc.) by default. Pass `includeIgnored: true` to search them.
    - Never traverses into symlink/junction directories to prevent recursion cycles and escapes.
+   - Streams native MCP progress notifications (`notifications/progress`) when a client `progressToken` is provided.
 
 2. **`search_text`**:
    - Searches UTF-8 text files using bounded literal matching with fixed concurrency (8 workers).
@@ -184,6 +185,7 @@ The `workspace` profile provides bounded, read-only search tools:
    - Automatically skips binary files (NUL bytes) and files larger than 1 MiB (`MAX_SEARCH_FILE_BYTES`).
    - Limits: Hard defaults (`maxResults: 100` [max 500], `maxFiles: 5000` [max 50000], `timeoutMs: 10000` [max 30000]).
    - Fully cancellable via client `AbortSignal`.
+   - Streams native MCP progress notifications (`notifications/progress`) when requested via `progressToken`. Zero progress overhead when unrequested.
 
 ---
 

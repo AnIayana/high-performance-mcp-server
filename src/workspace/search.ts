@@ -213,6 +213,7 @@ export async function searchFilesService(
 
   const results: SearchFileEntry[] = [];
   let scannedEntries = 0;
+  let lastEmittedProgress = 0;
   let stopReason: SearchStopReason = "completed";
 
   interface WalkItem {
@@ -262,6 +263,7 @@ export async function searchFilesService(
 
       scannedEntries++;
       if (scannedEntries % 250 === 0 && options.onProgress) {
+        lastEmittedProgress = scannedEntries;
         try {
           await options.onProgress(scannedEntries);
         } catch {
@@ -337,6 +339,20 @@ export async function searchFilesService(
     }
   }
 
+  // Final progress notification if scanned entries exist and was not already emitted by cadence
+  if (
+    scannedEntries > 0 &&
+    scannedEntries !== lastEmittedProgress &&
+    options.onProgress &&
+    !options.signal?.aborted
+  ) {
+    try {
+      await options.onProgress(scannedEntries);
+    } catch {
+      // Progress failure must never abort the search
+    }
+  }
+
   // Deterministic sorting by path
   results.sort((a, b) => a.path.localeCompare(b.path));
 
@@ -407,6 +423,7 @@ export async function searchTextService(
 
   const results: SearchTextMatch[] = [];
   let scannedFiles = 0;
+  let lastEmittedProgress = 0;
   let skippedBinaryFiles = 0;
   let skippedLargeFiles = 0;
   let matchedFiles = 0;
@@ -506,6 +523,7 @@ export async function searchTextService(
       scannedFiles++;
 
       if (scannedFiles % 250 === 0 && options.onProgress) {
+        lastEmittedProgress = scannedFiles;
         try {
           await options.onProgress(scannedFiles);
         } catch {
@@ -591,6 +609,20 @@ export async function searchTextService(
   const workerCount = Math.min(SEARCH_CONCURRENCY, candidateFiles.length || 1);
   const workers = Array.from({ length: workerCount }, () => processNextFile());
   await Promise.all(workers);
+
+  // Final progress notification if scanned files exist and was not already emitted by cadence
+  if (
+    scannedFiles > 0 &&
+    scannedFiles !== lastEmittedProgress &&
+    options.onProgress &&
+    !options.signal?.aborted
+  ) {
+    try {
+      await options.onProgress(scannedFiles);
+    } catch {
+      // Ignore progress error
+    }
+  }
 
   // Deterministic sorting of matches: by path, then line, then column
   results.sort((a, b) => {

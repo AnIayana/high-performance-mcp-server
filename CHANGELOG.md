@@ -9,11 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added native worker thread progress reporting (`onProgress`) across `WorkerPool` and the `heavy_compute_worker` tool, streaming periodic throttled progress and truthful known `total` progress matching input limit when requested via MCP `progressToken`.
+- Normalized search progress notifications (`notifications/progress`) in `search_files` and `search_text`, ensuring non-empty directory searches emit a terminal progress notification upon scanning completion while preserving zero progress notification noise for empty scans (`0` scanned). `total` remains omitted for recursive search operations due to dynamic directory depth and bounded limits.
+- Guaranteed sequential delivery (`progressChain`) ensuring all in-flight `notifications/progress` messages are completely flushed to the client transport before returning final tool call results.
 - Added `AbortSignal` request cancellation support across the worker thread pool (`WorkerPool.execute`, `executeWorkerTask`), enabling immediate removal of cancelled queued tasks and prompt termination and single replacement of busy worker threads running long CPU tasks.
 - Propagated MCP request `AbortSignal` to the `heavy_compute_worker` tool handler, allowing clients to abort long-running worker calculations promptly without waiting for the 30-second task timeout.
 
 ### Security & Reliability
 
+- Progress reporting incurs zero CPU or IPC overhead when `progressToken` is omitted from request metadata.
+- Isolated progress events strictly to the originating task and discarded late progress messages from aborted or terminated tasks.
 - Preserved worker pool capacity and steady-state worker count invariants (`totalWorkers <= configuredWorkers`) during cancellation recovery.
 - Prevented unhandled rejections, listener leaks, and stale message handling from terminated worker threads.
 
