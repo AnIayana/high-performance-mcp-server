@@ -376,12 +376,13 @@ test("TEST 16 — Search final progress normalization matrix", async () => {
     // Case B & C: Large directory fixtures with exact and non-exact multiples of 250
     const largeTempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-search-progress-matrix-"));
     try {
-      const rootDir = path.join(largeTempDir, "root");
-      fs.mkdirSync(rootDir, { recursive: true });
+      const rawRootDir = path.join(largeTempDir, "root");
+      fs.mkdirSync(rawRootDir, { recursive: true });
+      const realRootDir = fs.realpathSync.native ? fs.realpathSync.native(rawRootDir) : fs.realpathSync(rawRootDir);
 
       // Create 503 dummy files
       for (let i = 1; i <= 503; i++) {
-        fs.writeFileSync(path.join(rootDir, `file_${String(i).padStart(4, "0")}.txt`), `content ${i}`);
+        fs.writeFileSync(path.join(realRootDir, `file_${String(i).padStart(4, "0")}.txt`), `content ${i}`);
       }
 
       const customConfig: WorkspaceConfig = {
@@ -389,8 +390,8 @@ test("TEST 16 — Search final progress normalization matrix", async () => {
           {
             id: "root-large",
             name: "Large Root",
-            path: rootDir,
-            realPath: rootDir,
+            path: rawRootDir,
+            realPath: realRootDir,
           },
         ],
       };
@@ -407,9 +408,9 @@ test("TEST 16 — Search final progress normalization matrix", async () => {
       assert.deepEqual(progressB, [250, 500, 503], "Must emit periodic (250, 500) then terminal 503");
 
       // Case C: Exact multiple of 250 (e.g. 500 files) -> [250, 500] (no duplicate 500)
-      fs.unlinkSync(path.join(rootDir, "file_0501.txt"));
-      fs.unlinkSync(path.join(rootDir, "file_0502.txt"));
-      fs.unlinkSync(path.join(rootDir, "file_0503.txt"));
+      fs.unlinkSync(path.join(realRootDir, "file_0501.txt"));
+      fs.unlinkSync(path.join(realRootDir, "file_0502.txt"));
+      fs.unlinkSync(path.join(realRootDir, "file_0503.txt"));
 
       const progressC: number[] = [];
       const resC = await searchFilesService(customConfig, "root-large", "nonexistent_query", {
@@ -422,7 +423,7 @@ test("TEST 16 — Search final progress normalization matrix", async () => {
       assert.deepEqual(progressC, [250, 500], "Must emit [250, 500] without duplicate terminal 500");
 
       // Case D: Zero-work search (empty subfolder) -> 0 progress events
-      const emptySubdir = path.join(rootDir, "empty_dir");
+      const emptySubdir = path.join(realRootDir, "empty_dir");
       fs.mkdirSync(emptySubdir, { recursive: true });
       const progressD: number[] = [];
       const resD = await searchFilesService(customConfig, "root-large", "test", {
