@@ -187,6 +187,14 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **No File Watchers or Subscriptions**: Milestone 5 does not implement filesystem subscriptions (`resources/subscribe`) or file watchers.
 - **No Workspace Resource Cache**: Resources are not cached in-memory; each read reflects current filesystem state.
 - **Strict Read-Only Guarantee**: Possessing or reading a workspace resource URI grants zero mutation, deletion, or execution capabilities.
-- **Error Privacy**: Client-facing error messages are sanitized to reference only logical root IDs and relative paths, preventing server host path disclosure.
+### 15. MCP Protocol Logging & Structural Privacy Guarantees
+- **Operator Ceiling Enforcement**: The server's client-visible protocol logging (`notifications/message`, `logging/setLevel`) is governed by an operator-controlled maximum verbosity ceiling (`--mcp-log-level`, `MCP_LOG_LEVEL`, default: `off`). The effective severity threshold is computed as `max(operatorThreshold, clientRequestedThreshold)`. Clients can never escalate verbosity beyond what the operator permits.
+- **Default Off**: When logging is configured as `off`, the `logging` capability is not advertised in server capabilities, and `logging/setLevel` requests are rejected.
+- **Strict Structural Allowlisting**: Client-visible log messages contain strictly allowlisted fields (`event`, `tool`, `profile`, `outcome`, `durationMs`, `errorCode`).
+- **Complete Elimination of Sensitive Fields**: Raw tool arguments (`args`), user-supplied parameters, file paths, file contents, secrets, tokens, HTTP headers, cookies, query parameters, stack traces, and internal error messages are **never** logged to client protocol notifications.
+- **Normalized Error Code Classification**: Errors and exceptions are mapped to sanitized high-level enum codes (`cancelled`, `timeout`, `invalid_request`, `not_found`, `content_conflict`, `access_denied`, `network_error`, `internal_error`).
+- **Per-Session Isolation**: Logging levels and notifications are isolated per active transport session (`sessionId`). In multi-client Streamable HTTP environments, one client's log level or operations cannot leak to or affect another client's session.
+- **Delivery Fault Isolation**: Asynchronous logging notifications are non-blocking, error-isolated, and queue-bounded (`MAX_PENDING_LOGS_PER_SESSION = 64`). Auxiliary notification delivery failures or slow clients never interrupt tool execution or leak memory.
+- **Stderr Channel Independence**: Process-local `stderr` logging operates completely independently from client-visible MCP protocol logging.
 
 

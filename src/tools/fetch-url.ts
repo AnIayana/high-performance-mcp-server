@@ -100,6 +100,7 @@ export default function registerFetchUrlTool(
         ],
         structuredContent: result,
       };
-    })
+    },
+    context)
   );
 }

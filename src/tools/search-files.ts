@@ -171,6 +171,7 @@ export default function registerSearchFilesTool(
         isSettled = true;
         await progressChain;
       }
-    })
+    },
+    context)
   );
 }

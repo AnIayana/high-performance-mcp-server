@@ -41,6 +41,7 @@ export default function registerWorkspaceRootsTool(
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
       };
-    })
+    },
+    context)
   );
 }

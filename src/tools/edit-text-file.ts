@@ -115,6 +115,7 @@ export default function registerEditTextFileTool(
           ],
         };
       }
-    })
+    },
+    context)
   );
 }

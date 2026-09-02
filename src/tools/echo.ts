@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import type { ToolMetadata } from "./types.js";
 
@@ -12,7 +13,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'echo' tool on the provided MCP server instance.
  */
-export default function registerEchoTool(server: McpServer): void {
+export default function registerEchoTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -22,15 +26,19 @@ export default function registerEchoTool(server: McpServer): void {
         message: z.string().describe("The message to echo back"),
       }),
     },
-    withToolMetrics("echo", async ({ message }) => {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Echo: ${message}`,
-          },
-        ],
-      };
-    })
+    withToolMetrics(
+      "echo",
+      async ({ message }) => {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Echo: ${message}`,
+            },
+          ],
+        };
+      },
+      context
+    )
   );
 }

@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import { countPrimes } from "../workers/compute.js";
 import { runWithEventLoopProbe } from "../workers/probe.js";
@@ -15,7 +16,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'heavy_compute_main' tool on the provided MCP server instance.
  */
-export default function registerHeavyComputeMainTool(server: McpServer): void {
+export default function registerHeavyComputeMainTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -39,7 +43,9 @@ export default function registerHeavyComputeMainTool(server: McpServer): void {
           .describe("Event loop blocking delay measured by 20ms probe timer"),
       }),
     },
-    withToolMetrics("heavy_compute_main", async ({ limit }) => {
+    withToolMetrics(
+      "heavy_compute_main",
+      async ({ limit }) => {
       const probeResult = await runWithEventLoopProbe(() => countPrimes(limit));
 
       const structured = {

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added standards-compliant MCP protocol logging (`notifications/message`, `logging/setLevel`) with operator-controlled max verbosity ceiling (`--mcp-log-level`, `MCP_LOG_LEVEL`, default: `off`).
+- Supported all 8 standard RFC 5424 / MCP logging levels: `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, and `emergency`.
+- Advertised MCP server capability `logging: {}` dynamically when operator logging is enabled, and omitted capability completely when `off`.
+- Structured allowlisted lifecycle logging across all 20 tools (`tool.started`, `tool.completed`, `tool.cancelled`, `tool.timeout`, `tool.failed`) with duration measurement via monotonic clock.
+- Normalized error classification mapping exceptions to safe standardized codes (`cancelled`, `timeout`, `invalid_request`, `not_found`, `content_conflict`, `access_denied`, `network_error`, `internal_error`).
+- Per-session / multi-client log level isolation across Streamable HTTP and stdio transports without cross-client state leakage.
 - Added native worker thread progress reporting (`onProgress`) across `WorkerPool` and the `heavy_compute_worker` tool, streaming periodic throttled progress and truthful known `total` progress matching input limit when requested via MCP `progressToken`.
 - Normalized search progress notifications (`notifications/progress`) in `search_files` and `search_text`, ensuring non-empty directory searches emit a terminal progress notification upon scanning completion while preserving zero progress notification noise for empty scans (`0` scanned). `total` remains omitted for recursive search operations due to dynamic directory depth and bounded limits.
 - Guaranteed sequential delivery (`progressChain`) ensuring all in-flight `notifications/progress` messages are completely flushed to the client transport before returning final tool call results.
@@ -17,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security & Reliability
 
+- Structural privacy guarantee: Client-visible MCP log notifications contain strictly allowlisted fields and are mathematically guaranteed never to contain raw tool arguments, file paths, file contents, secrets, tokens, HTTP headers, or stack traces.
+- Operator verbosity ceiling: Clients can never escalate logging verbosity beyond what the operator permits (`effectiveLevel = max(operatorSeverity, clientSeverity)`).
+- Auxiliary delivery isolation: Asynchronous logging notification errors are swallowed and bounded (`MAX_PENDING_LOGS_PER_SESSION = 64`), preventing tool failure, memory leaks, or unhandled promise rejections.
+- Stderr process logging remains completely independent from client-visible MCP protocol logging.
 - Progress reporting incurs zero CPU or IPC overhead when `progressToken` is omitted from request metadata.
 - Isolated progress events strictly to the originating task and discarded late progress messages from aborted or terminated tasks.
 - Preserved worker pool capacity and steady-state worker count invariants (`totalWorkers <= configuredWorkers`) during cancellation recovery.

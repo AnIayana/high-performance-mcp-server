@@ -57,7 +57,8 @@ async function main(): Promise<void> {
       workspaceConfig,
       config.networkPolicy,
       config.networkCachePolicy,
-      config.workspacePolicy
+      config.workspacePolicy,
+      config.mcpLogLevel
     );
   } else {
     await startStdioTransport(
@@ -65,7 +66,8 @@ async function main(): Promise<void> {
       workspaceConfig,
       config.networkPolicy,
       config.networkCachePolicy,
-      config.workspacePolicy
+      config.workspacePolicy,
+      config.mcpLogLevel
     );
   }
 }

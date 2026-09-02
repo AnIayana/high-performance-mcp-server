@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import { executeWorkerTask, type WorkerTaskProgress } from "../workers/pool.js";
 import { runWithEventLoopProbe } from "../workers/probe.js";
@@ -15,7 +16,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'heavy_compute_worker' tool on the provided MCP server instance.
  */
-export default function registerHeavyComputeWorkerTool(server: McpServer): void {
+export default function registerHeavyComputeWorkerTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -26,8 +30,8 @@ export default function registerHeavyComputeWorkerTool(server: McpServer): void 
           .number()
           .int()
           .min(100000)
-          .max(5000000)
-          .describe("Upper bound integer limit for prime counting (100,000 - 5,000,000)"),
+          .max(50000000)
+          .describe("Upper bound integer limit for prime counting (100,000 - 50,000,000)"),
       }),
       outputSchema: z.object({
         mode: z.literal("worker").describe("Execution mode"),
@@ -118,6 +122,7 @@ export default function registerHeavyComputeWorkerTool(server: McpServer): void 
         isSettled = true;
         await progressChain;
       }
-    })
+    },
+    context)
   );
 }

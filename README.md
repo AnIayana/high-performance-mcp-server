@@ -411,6 +411,7 @@ Options:
   --network-cache-max-size-bytes=<n> Logical max cache payload size in bytes (1024-67108864, default: 16777216)
   --network-cache-max-entries=<n> Max cache entry count (1-512, default: 128)
   --network-cache-ttl-ms=<n>     Max cache retention TTL in ms (1000-3600000, default: 300000)
+  --mcp-log-level=<level>        Max verbosity ceiling for client-visible MCP protocol logging (off|debug|info|notice|warning|error|critical|alert|emergency, default: off)
   --list-tools                   Display available tools for the active profile and exit
   --help, -h                     Show this help message and exit
   --version, -v                  Show version and exit
@@ -432,6 +433,9 @@ high-performance-mcp-server --profile=network \
   --network-cache \
   --network-cache-max-entries=256
 
+# Start with client-visible MCP protocol logging enabled up to info
+high-performance-mcp-server --mcp-log-level=info
+
 # List tools available under the workspace profile
 high-performance-mcp-server --profile=workspace --list-tools
 
@@ -447,6 +451,18 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 - **Endpoint**: `http://127.0.0.1:<port>/mcp`
 - **Security**: The server binds strictly to `127.0.0.1` and validates `Host` and `Origin` headers to protect against DNS rebinding and cross-site request forgery.
 - **Warning**: Do not expose the HTTP transport directly to untrusted networks without an authenticating reverse proxy or gateway.
+
+---
+
+## MCP Protocol Logging & Privacy Guarantees
+
+The server provides standards-compliant client-visible protocol logging (`notifications/message`, `logging/setLevel`) with strict operator ceiling and privacy controls:
+
+- **Operator Ceiling**: The `--mcp-log-level` flag (or `MCP_LOG_LEVEL`) sets the maximum verbosity allowed. Clients cannot escalate verbosity above the operator ceiling (`effective = max(operator, client)`).
+- **Default Off**: When set to `off` (default), the `logging` capability is not advertised to clients, and `logging/setLevel` requests are rejected.
+- **Structural Privacy Guarantee**: Log notifications contain strictly allowlisted fields (`event`, `tool`, `profile`, `outcome`, `durationMs`, `errorCode`). Raw tool arguments, file paths, file contents, secrets, tokens, HTTP headers, and stack traces are **never** logged to clients.
+- **Normalized Error Classification**: Errors are mapped to safe normalized codes (`cancelled`, `timeout`, `invalid_request`, `not_found`, `content_conflict`, `access_denied`, `network_error`, `internal_error`).
+- **Channel Independence**: Process-local `stderr` logging remains completely independent from client-visible MCP protocol logging.
 
 ---
 
@@ -467,9 +483,11 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 | `MCP_NETWORK_CACHE_MAX_SIZE_BYTES`| `number` | `16777216`| Logical max cache payload size override in bytes (1024 to 67108864) |
 | `MCP_NETWORK_CACHE_MAX_ENTRIES` | `number` | `128` | Max cache entries override (1 to 512) |
 | `MCP_NETWORK_CACHE_TTL_MS` | `number` | `300000` | Max cache retention TTL override in ms (1000 to 3600000) |
+| `MCP_LOG_LEVEL` | `string` | `off` | Client-visible MCP protocol logging ceiling (`off`, `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`) |
 | `MCP_WORKER_COUNT` | `number` | `4` | Number of worker threads spawned in the pool (1 to 16) |
 | `MCP_CACHE_MAX_ENTRIES` | `number` | `256` | Maximum entries in the LRU compute cache (1 to 10000) |
 | `MCP_CACHE_TTL_MS` | `number` | `300000` | LRU compute cache entry Time-to-Live in milliseconds (5 minutes) |
+
 
 ---
 

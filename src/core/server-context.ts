@@ -1,5 +1,7 @@
+import type { McpServer } from "@modelcontextprotocol/server";
 import type { ToolProfile } from "../config/tool-profile.js";
 import type { WorkspaceConfig } from "../config/workspace.js";
+import type { McpLoggingManager } from "../logging/manager.js";
 import type { NetworkOperatorPolicy } from "../network/operator-policy.js";
 import type {
   HttpConditionalCache,
@@ -17,5 +19,8 @@ export interface ServerContext {
   readonly networkPolicy?: NetworkOperatorPolicy;
   readonly networkCachePolicy?: NetworkCachePolicy;
   readonly networkCache?: HttpConditionalCache;
+  readonly mcpLogging?: McpLoggingManager;
+  readonly server?: McpServer;
 }
+
 

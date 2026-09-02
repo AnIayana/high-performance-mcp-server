@@ -5,6 +5,11 @@ import type { WorkspaceConfig } from "./config/workspace.js";
 import type { ServerContext } from "./core/server-context.js";
 import { PACKAGE_NAME, PACKAGE_VERSION } from "./generated/build-meta.js";
 import {
+  isValidMcpProtocolLogLevel,
+  McpLoggingManager,
+  type OperatorMcpLogLevel,
+} from "./logging/index.js";
+import {
   HttpConditionalCache,
   type NetworkCachePolicy,
 } from "./network/conditional-cache.js";
@@ -20,12 +25,14 @@ export interface CreateServerOptions {
   workspacePolicy?: WorkspaceOperatorPolicy;
   networkPolicy?: NetworkOperatorPolicy;
   networkCachePolicy?: NetworkCachePolicy;
+  mcpLogLevel?: OperatorMcpLogLevel;
+  mcpLogging?: McpLoggingManager;
 }
 
 /**
  * Creates and initializes a new Model Context Protocol (MCP) server instance.
  * Tools, resources, prompts, and server instructions are registered according to the
- * specified security profile and workspace roots.
+ * specified security profile, workspace roots, and operator logging settings.
  */
 export function createServer(options?: CreateServerOptions): McpServer {
   const profile = options?.profile ?? DEFAULT_TOOL_PROFILE;
@@ -37,6 +44,14 @@ export function createServer(options?: CreateServerOptions): McpServer {
     ? new HttpConditionalCache(networkCachePolicy)
     : undefined;
 
+  const mcpLogLevel = options?.mcpLogLevel ?? "off";
+  const mcpLogging =
+    options?.mcpLogging ?? (mcpLogLevel !== "off" ? new McpLoggingManager(mcpLogLevel) : undefined);
+
+  const capabilities = mcpLogging?.isCapabilityEnabled()
+    ? { logging: {} }
+    : undefined;
+
   const server = new McpServer(
     {
       name: PACKAGE_NAME,
@@ -44,8 +59,21 @@ export function createServer(options?: CreateServerOptions): McpServer {
     },
     {
       instructions: getServerInstructions(profile),
+      capabilities,
     }
   );
+
+  // Register logging/setLevel request handler if MCP logging capability is enabled
+  if (mcpLogging?.isCapabilityEnabled()) {
+    server.server.setRequestHandler("logging/setLevel", async (request, ctx: any) => {
+      const sessionId = mcpLogging.extractSessionId(ctx);
+      const level = request.params?.level;
+      if (typeof level === "string" && isValidMcpProtocolLogLevel(level)) {
+        mcpLogging.setClientLevel(sessionId, level);
+      }
+      return {};
+    });
+  }
 
   const context: ServerContext = {
     profile,
@@ -54,6 +82,8 @@ export function createServer(options?: CreateServerOptions): McpServer {
     networkPolicy,
     networkCachePolicy,
     networkCache,
+    mcpLogging,
+    server,
   };
 
   registerTools(server, context);
@@ -62,3 +92,4 @@ export function createServer(options?: CreateServerOptions): McpServer {
 
   return server;
 }
+

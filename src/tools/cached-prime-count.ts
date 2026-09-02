@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { cacheGetOrCompute } from "../core/cache.js";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import { executeWorkerTask } from "../workers/pool.js";
 import type { ToolMetadata } from "./types.js";
@@ -16,7 +17,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'cached_prime_count' tool on the provided MCP server instance.
  */
-export default function registerCachedPrimeCountTool(server: McpServer): void {
+export default function registerCachedPrimeCountTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -40,7 +44,9 @@ export default function registerCachedPrimeCountTool(server: McpServer): void {
         durationMs: z.number().describe("Execution duration in milliseconds"),
       }),
     },
-    withToolMetrics("cached_prime_count", async ({ limit }) => {
+    withToolMetrics(
+      "cached_prime_count",
+      async ({ limit }) => {
       const cacheKey = `prime-count:v1:${limit}`;
       const start = performance.now();
 

@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { getCacheStats } from "../core/cache.js";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import type { ToolMetadata } from "./types.js";
 
@@ -13,7 +14,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'cache_stats' tool on the provided MCP server instance.
  */
-export default function registerCacheStatsTool(server: McpServer): void {
+export default function registerCacheStatsTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -33,7 +37,9 @@ export default function registerCacheStatsTool(server: McpServer): void {
         hitRatePercent: z.number().describe("Cache hit rate percentage (0-100%)"),
       }),
     },
-    withToolMetrics("cache_stats", async () => {
+    withToolMetrics(
+      "cache_stats",
+      async () => {
       const stats = getCacheStats();
 
       const textSummary = [

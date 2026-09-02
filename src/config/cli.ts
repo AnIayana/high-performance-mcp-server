@@ -43,6 +43,13 @@ import {
   type ToolProfile,
   VALID_TOOL_PROFILES,
 } from "./tool-profile.js";
+import {
+  DEFAULT_OPERATOR_MCP_LOG_LEVEL,
+  isValidOperatorMcpLogLevel,
+  normalizeOperatorMcpLogLevel,
+  type OperatorMcpLogLevel,
+  VALID_OPERATOR_MCP_LOG_LEVELS,
+} from "../logging/index.js";
 
 export type CliAction = "start" | "help" | "version" | "list-tools";
 
@@ -55,8 +62,10 @@ export interface ParsedCliConfig {
   workspacePolicy: WorkspaceOperatorPolicy;
   networkPolicy: NetworkOperatorPolicy;
   networkCachePolicy: NetworkCachePolicy;
+  mcpLogLevel: OperatorMcpLogLevel;
   error?: string;
 }
+
 
 /**
  * Returns the package version from generated build metadata.
@@ -128,6 +137,7 @@ export function getHelpText(): string {
     "  --network-cache-max-size-bytes=<n> Logical max cache payload size in bytes (1024-67108864, default: 16777216)",
     "  --network-cache-max-entries=<n> Max cache entry count (1-512, default: 128)",
     "  --network-cache-ttl-ms=<n>     Max cache retention TTL in ms (1000-3600000, default: 300000)",
+    "  --mcp-log-level=<level>        Max verbosity ceiling for client-visible MCP protocol logging (off|debug|info|notice|warning|error|critical|alert|emergency, default: off)",
     "  --list-tools                   Display available tools for the active profile and exit",
     "  --help, -h                     Show this help message and exit",
     "  --version, -v                  Show version and exit",
@@ -158,6 +168,7 @@ export function getHelpText(): string {
     "  MCP_NETWORK_CACHE_MAX_SIZE_BYTES Logical max cache size in bytes override (1024-67108864)",
     "  MCP_NETWORK_CACHE_MAX_ENTRIES  Max cache entries override (1-512)",
     "  MCP_NETWORK_CACHE_TTL_MS       Max cache retention TTL in ms override (1000-3600000)",
+    "  MCP_LOG_LEVEL                  Client-visible MCP protocol logging ceiling override (off|debug|info|notice|warning|error|critical|alert|emergency)",
     "  MCP_WORKER_COUNT               Worker thread count override (1-16)",
     "  MCP_CACHE_MAX_ENTRIES          LRU cache capacity override (1-10000)",
     "  MCP_CACHE_TTL_MS               LRU cache TTL in ms (1000-86400000)",
@@ -169,8 +180,10 @@ export function getHelpText(): string {
     `  ${CLI_BIN_NAME} --profile=network --network-allow-host=example.com --network-allow-host="*.githubusercontent.com" --network-https-only`,
     `  ${CLI_BIN_NAME} --profile=network --network-max-response-bytes=262144 --network-max-timeout-ms=5000`,
     `  ${CLI_BIN_NAME} --profile=network --network-cache --network-cache-max-entries=256`,
+    `  ${CLI_BIN_NAME} --mcp-log-level=info`,
     `  ${CLI_BIN_NAME} --transport=http --port=3000`,
     `  ${CLI_BIN_NAME} --profile=workspace --list-tools`,
+
     "",
   ].join("\n");
 }
@@ -258,6 +271,11 @@ export function parseCliArgs(
   let envCacheMaxEntries: number | undefined;
   let envCacheTtlMs: number | undefined;
 
+  // MCP protocol logging accumulators
+  let cliMcpLogLevel: OperatorMcpLogLevel | undefined;
+  let envMcpLogLevel: OperatorMcpLogLevel | undefined;
+  let seenMcpLogLevel = false;
+
   const defaultPolicy = DEFAULT_NETWORK_OPERATOR_POLICY;
   const defaultCachePolicy = DEFAULT_NETWORK_CACHE_POLICY;
   const defaultWorkspacePolicy = DEFAULT_WORKSPACE_OPERATOR_POLICY;
@@ -271,6 +289,7 @@ export function parseCliArgs(
     workspacePolicy: defaultWorkspacePolicy,
     networkPolicy: defaultPolicy,
     networkCachePolicy: defaultCachePolicy,
+    mcpLogLevel: DEFAULT_OPERATOR_MCP_LOG_LEVEL,
     error: errorMessage,
   });
 
@@ -285,6 +304,7 @@ export function parseCliArgs(
       workspacePolicy: defaultWorkspacePolicy,
       networkPolicy: defaultPolicy,
       networkCachePolicy: defaultCachePolicy,
+      mcpLogLevel: DEFAULT_OPERATOR_MCP_LOG_LEVEL,
     };
   }
   if (args.includes("--version") || args.includes("-v")) {
@@ -297,6 +317,7 @@ export function parseCliArgs(
       workspacePolicy: defaultWorkspacePolicy,
       networkPolicy: defaultPolicy,
       networkCachePolicy: defaultCachePolicy,
+      mcpLogLevel: DEFAULT_OPERATOR_MCP_LOG_LEVEL,
     };
   }
 
@@ -510,6 +531,17 @@ export function parseCliArgs(
       );
     }
     envCacheTtlMs = parsed;
+  }
+
+  // MCP protocol logging environment variable
+  if (env.MCP_LOG_LEVEL !== undefined && env.MCP_LOG_LEVEL.trim().length > 0) {
+    const normalized = normalizeOperatorMcpLogLevel(env.MCP_LOG_LEVEL);
+    if (!normalized) {
+      return errorResult(
+        `Invalid MCP_LOG_LEVEL environment variable: "${env.MCP_LOG_LEVEL}". Supported levels: ${VALID_OPERATOR_MCP_LOG_LEVELS.join(", ")}.`
+      );
+    }
+    envMcpLogLevel = normalized;
   }
 
   // 3. Parse and validate CLI arguments
@@ -844,6 +876,26 @@ export function parseCliArgs(
         );
       }
       cliCacheTtlMs = parsed;
+    } else if (optName === "--mcp-log-level") {
+      if (seenMcpLogLevel) {
+        return errorResult(
+          `Duplicate option specified: "--mcp-log-level". This option may only be specified once.`
+        );
+      }
+      seenMcpLogLevel = true;
+      if (optValue === undefined) {
+        if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+          return errorResult(`Missing value for option "--mcp-log-level".`);
+        }
+        optValue = args[++i]!;
+      }
+      const normalized = normalizeOperatorMcpLogLevel(optValue);
+      if (!normalized) {
+        return errorResult(
+          `Invalid --mcp-log-level option: "${optValue}". Supported levels: ${VALID_OPERATOR_MCP_LOG_LEVELS.join(", ")}.`
+        );
+      }
+      cliMcpLogLevel = normalized;
     } else {
       return errorResult(
         `Unknown CLI option: "${arg}". Use --help to view available options.`
@@ -904,6 +956,10 @@ export function parseCliArgs(
     retentionTtlMs: effectiveCacheTtlMs,
   });
 
+  // Precedence resolution for MCP protocol logging ceiling:
+  const effectiveMcpLogLevel =
+    cliMcpLogLevel ?? envMcpLogLevel ?? DEFAULT_OPERATOR_MCP_LOG_LEVEL;
+
   // Validation: Workspace profiles require at least one allowed root when starting server
   if (
     action === "start" &&
@@ -924,5 +980,6 @@ export function parseCliArgs(
     workspacePolicy,
     networkPolicy,
     networkCachePolicy,
+    mcpLogLevel: effectiveMcpLogLevel,
   };
 }

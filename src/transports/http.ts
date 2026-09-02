@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/node";
 import { DEFAULT_TOOL_PROFILE, type ToolProfile } from "../config/tool-profile.js";
 import type { WorkspaceConfig } from "../config/workspace.js";
+import { McpLoggingManager, type OperatorMcpLogLevel } from "../logging/index.js";
 import type { NetworkCachePolicy } from "../network/conditional-cache.js";
 import type { NetworkOperatorPolicy } from "../network/operator-policy.js";
 import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
@@ -30,8 +31,14 @@ export async function createHttpTransportServer(
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
   networkCachePolicy?: NetworkCachePolicy,
-  workspacePolicy?: WorkspaceOperatorPolicy
+  workspacePolicy?: WorkspaceOperatorPolicy,
+  mcpLogLevel?: OperatorMcpLogLevel
 ): Promise<HttpTransportServerInstance> {
+  const mcpLogging =
+    mcpLogLevel && mcpLogLevel !== "off"
+      ? new McpLoggingManager(mcpLogLevel)
+      : undefined;
+
   const handler = createMcpHandler(() =>
     createServer({
       profile,
@@ -39,6 +46,8 @@ export async function createHttpTransportServer(
       workspacePolicy,
       networkPolicy,
       networkCachePolicy,
+      mcpLogLevel,
+      mcpLogging,
     })
   );
   const nodeHandler = toNodeHandler(handler);
@@ -81,6 +90,7 @@ export async function createHttpTransportServer(
             else res();
           });
         });
+        mcpLogging?.close();
         await closeWorkerPool();
         await handler.close();
       };
@@ -108,7 +118,8 @@ export async function startHttpTransport(
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
   networkCachePolicy?: NetworkCachePolicy,
-  workspacePolicy?: WorkspaceOperatorPolicy
+  workspacePolicy?: WorkspaceOperatorPolicy,
+  mcpLogLevel?: OperatorMcpLogLevel
 ): Promise<void> {
   const instance = await createHttpTransportServer(
     port,
@@ -116,7 +127,8 @@ export async function startHttpTransport(
     workspaceConfig,
     networkPolicy,
     networkCachePolicy,
-    workspacePolicy
+    workspacePolicy,
+    mcpLogLevel
   );
   console.error(`[MCP HTTP] Listening on http://127.0.0.1:${instance.port}/mcp (profile: ${profile})`);
 

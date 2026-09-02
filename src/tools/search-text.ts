@@ -174,6 +174,7 @@ export default function registerSearchTextTool(
         isSettled = true;
         await progressChain;
       }
-    })
+    },
+    context)
   );
 }

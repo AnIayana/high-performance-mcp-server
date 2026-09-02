@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import { getWorkerPoolStats } from "../workers/pool.js";
 import type { ToolMetadata } from "./types.js";
@@ -14,7 +15,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'worker_pool_stats' tool on the provided MCP server instance.
  */
-export default function registerWorkerPoolStatsTool(server: McpServer): void {
+export default function registerWorkerPoolStatsTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -37,7 +41,9 @@ export default function registerWorkerPoolStatsTool(server: McpServer): void {
           .describe("Total worker restart/replacement events"),
       }),
     },
-    withToolMetrics("worker_pool_stats", async () => {
+    withToolMetrics(
+      "worker_pool_stats",
+      async () => {
       const stats = getWorkerPoolStats();
 
       const textSummary = [

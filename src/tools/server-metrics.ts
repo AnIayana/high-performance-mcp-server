@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import { getMetricsSnapshot } from "../core/metrics.js";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import type { ToolMetadata } from "./types.js";
 
@@ -14,7 +15,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'server_metrics' tool on the provided MCP server instance.
  */
-export default function registerServerMetricsTool(server: McpServer): void {
+export default function registerServerMetricsTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -46,7 +50,9 @@ export default function registerServerMetricsTool(server: McpServer): void {
         ),
       }),
     },
-    withToolMetrics("server_metrics", async () => {
+    withToolMetrics(
+      "server_metrics",
+      async () => {
       // Capture snapshot at the start of execution so this in-flight call is not included
       const snapshot = getMetricsSnapshot();
 

@@ -2,6 +2,7 @@ import os from "node:os";
 import process from "node:process";
 import type { McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
+import type { ServerContext } from "../core/server-context.js";
 import { withToolMetrics } from "../core/tool-instrumentation.js";
 import type { ToolMetadata } from "./types.js";
 
@@ -14,7 +15,10 @@ export const toolMeta: ToolMetadata = {
 /**
  * Registers the 'system_stats' tool on the provided MCP server instance.
  */
-export default function registerSystemStatsTool(server: McpServer): void {
+export default function registerSystemStatsTool(
+  server: McpServer,
+  context?: ServerContext
+): void {
   server.registerTool(
     toolMeta.name,
     {
@@ -35,7 +39,9 @@ export default function registerSystemStatsTool(server: McpServer): void {
         nodeVersion: z.string().describe("Node.js runtime version"),
       }),
     },
-    withToolMetrics("system_stats", async () => {
+    withToolMetrics(
+      "system_stats",
+      async () => {
       const totalMem = os.totalmem();
       const freeMem = os.freemem();
       const usedMem = totalMem - freeMem;
