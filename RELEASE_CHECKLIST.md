@@ -8,7 +8,7 @@ This document serves as the pre-release checklist and automated release gate for
 
 - [ ] Version updated synchronously in `package.json` (`version`)
 - [ ] Version updated synchronously in `server.json` (`version` and `packages[0].version`)
-- [ ] `mcpName` in `package.json` matches `server.json.name` (`io.github.eminyilmz/high-performance-mcp-server`)
+- [ ] `mcpName` in `package.json` matches `server.json.name` (`io.github.AnIayana/high-performance-mcp-server`)
 - [ ] `CHANGELOG.md` updated with new version section `## [X.Y.Z] - YYYY-MM-DD` and release notes
 - [ ] Code generator executed: `npm run generate`
 - [ ] Auto-generated files drift check passes: `npm run check:generated`
@@ -46,6 +46,6 @@ This document serves as the pre-release checklist and automated release gate for
 - [ ] npm package published via OIDC trusted publishing (`npmPublished = true`)
 - [ ] npm package provenance verified on npmjs.com
 - [ ] MCP Registry published via GitHub OIDC (`mcpRegistryPublished = true`)
-- [ ] MCP Registry API verified: `io.github.eminyilmz/high-performance-mcp-server@X.Y.Z` is active
+- [ ] MCP Registry API verified: `io.github.AnIayana/high-performance-mcp-server@X.Y.Z` is active
 - [ ] GitHub Release `vX.Y.Z` created with generated release notes
 

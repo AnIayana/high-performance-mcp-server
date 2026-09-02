@@ -4,11 +4,11 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 
 ---
 
-## Project Status: Public Preview (v0.3.0)
+## Project Status: Public Preview (v0.4.0)
 
 > [!NOTE]
-> **Status**: `0.3.0` Public Preview.
-> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
+> **Status**: `0.4.0` Public Preview.
+> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
 
 ---
 
@@ -21,8 +21,9 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 - **MCP-Native Workspace Completions**: Autocompletes logical `rootId` values for every workspace prompt and the workspace resource template without enumerating files or exposing host paths.
 - **Safe-by-Default Tool Profiles**: Default `safe` profile exposes zero filesystem, network, or hardware inspection. Filesystem mutation and outbound network access require explicit `workspace_write`/`network` (or `all`) opt-in.
 - **Workspace Security & Host Path Privacy**: Secure allowlisted directory access with path traversal and symlink escape prevention, logical root mapping (`root-1`, `root-2`), bounded text operations, and binary file protection without exposing host absolute paths to clients or models. The `workspace` profile remains read-only; guarded mutation is isolated to `workspace_write` and `all`.
-- **Workspace Search v1**: Fast, bounded literal file and text search (`search_files`, `search_text`) with ignored directory defaults, bounded concurrency, coordinate mapping, and client cancellation.
-- **Worker Thread Pool**: Offload CPU-heavy tasks from the Node.js event loop with automatic lifecycle recovery and zero-drift invariants.
+- **Workspace Search v1**: Fast, bounded literal file and text search (`search_files`, `search_text`) with ignored directory defaults, bounded concurrency (`SEARCH_CONCURRENCY = 8`), coordinate mapping, and client cancellation.
+- **Worker Thread Pool with Cancellation**: Offload CPU-heavy tasks from the Node.js event loop with automatic lifecycle recovery, `AbortSignal` cancellation support, and prompt hard termination for running synchronous compute.
+- **Normalized MCP Progress Reporting**: High-performance progress notifications across workspace search and compute worker tools with guaranteed in-order delivery and zero overhead when omitted.
 - **Production LRU Cache**: Memory-bounded cache with TTL support and single-flight request coalescing to eliminate cache stampedes.
 - **Internal Structured Logging**: Stdio-safe JSON logging exclusively on `stderr`.
 
@@ -70,7 +71,7 @@ Add to your MCP configuration (e.g. `claude_desktop_config.json`):
 
 ```bash
 # Clone and build
-git clone https://github.com/eminyilmz/high-performance-mcp-server.git
+git clone https://github.com/AnIayana/high-performance-mcp-server.git
 cd high-performance-mcp-server
 npm install
 npm run build

@@ -6,8 +6,8 @@ import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const EXPECTED_PACKAGE_NAME = "high-performance-mcp-server";
-export const EXPECTED_MCP_NAME = "io.github.eminyilmz/high-performance-mcp-server";
-export const EXPECTED_REPO_URL = "https://github.com/eminyilmz/high-performance-mcp-server";
+export const EXPECTED_MCP_NAME = "io.github.AnIayana/high-performance-mcp-server";
+export const EXPECTED_REPO_URL = "https://github.com/AnIayana/high-performance-mcp-server";
 
 // Strict SemVer format: X.Y.Z without leading v, without leading zeros, without suffixes
 const STRICT_SEMVER_REGEX = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

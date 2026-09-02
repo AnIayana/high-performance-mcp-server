@@ -162,7 +162,7 @@ async function runPackageSmokeTest(): Promise<void> {
     const installedPackageJson = JSON.parse(fs.readFileSync(installedPackageJsonPath, "utf-8"));
     assert.equal(
       installedPackageJson.mcpName,
-      "io.github.eminyilmz/high-performance-mcp-server",
+      "io.github.AnIayana/high-performance-mcp-server",
       "Installed package.json must contain verified mcpName"
     );
     assert.equal(

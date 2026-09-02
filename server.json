@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.eminyilmz/high-performance-mcp-server",
+  "name": "io.github.AnIayana/high-performance-mcp-server",
   "title": "High Performance MCP Server",
   "description": "High-performance, modular MCP v2 server with safe profiles, worker pool, caching, and stdio.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "repository": {
-    "url": "https://github.com/eminyilmz/high-performance-mcp-server",
+    "url": "https://github.com/AnIayana/high-performance-mcp-server",
     "source": "github"
   },
   "packages": [
     {
       "registryType": "npm",
       "identifier": "high-performance-mcp-server",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       }

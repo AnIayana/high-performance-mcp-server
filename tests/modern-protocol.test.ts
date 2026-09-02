@@ -108,7 +108,7 @@ test("Modern MCP Protocol (2026-07-28) — Safe Profile Connection & Identity", 
     const serverVersion = client.getServerVersion();
     assert.equal(serverVersion?.name, PACKAGE_NAME);
     assert.equal(serverVersion?.version, PACKAGE_VERSION);
-    assert.equal(serverVersion?.version, "0.3.0");
+    assert.equal(serverVersion?.version, "0.4.0");
 
     // Server Instructions verification (Safe profile)
     const instructions = client.getInstructions();

@@ -77,10 +77,20 @@ By default, the server operates under the `safe` profile, exposing only harmless
 - **Trusted Publishing / OIDC**: npm package publishing is automated through GitHub Actions using cryptographic OpenID Connect (OIDC) identity tokens. No long-lived `NPM_TOKEN` or publish secrets are stored or required. Publishing via OIDC requires `npm >= 11.5.1` and `Node >= 22.14.0` (pinned to `11.19.0` in the release workflow).
 - **npm Trust CLI Management**: Managing trusted publishers via the command line (`npm trust github ...`) requires `npm >= 11.15.0`. Alternatively, trusted publishers can be configured via the npmjs.com web interface.
 - **npm Provenance**: Packages published via the trusted release workflow automatically include verifiable npm provenance attestations linking published tarballs back to the exact source commit and GitHub Actions run.
-- **MCP Registry GitHub OIDC**: Official MCP Registry publication utilizes non-interactive `mcp-publisher login github-oidc` authentication with short-lived GitHub Actions identity tokens scoped to `io.github.eminyilmz/*`.
+- **MCP Registry GitHub OIDC**: Official MCP Registry publication utilizes non-interactive `mcp-publisher login github-oidc` authentication with short-lived GitHub Actions identity tokens scoped to `io.github.AnIayana/*`.
 - **Least Privilege Permissions**: Release jobs require explicit `id-token: write` and `contents: write` permissions, while standard validation and CI jobs remain strictly read-only (`contents: read`).
 - **Release Environment Protection**: Irreversible publication jobs run within the `release` GitHub Environment, allowing repository maintainers to enforce manual approval gates and required reviewer checks before publication proceeds.
 - **Immutable Version & Tag Enforcement**: Real releases require exact SemVer matching across `package.json`, `server.json`, and an immutable Git tag (`vX.Y.Z`) pointing directly to the checked-out commit. Dry-run validation tests the quality gate without requiring Git tags.
+
+### 9.1 Worker Thread Pool Cancellation & Termination Lifecycle
+- **AbortSignal Request Cancellation**: In-flight worker requests honor client cancellation. Queued tasks are immediately removed before thread allocation.
+- **Hard Termination for CPU Isolation**: Running synchronous worker compute tasks are terminated promptly via `worker.terminate()` upon cancellation, preventing CPU exhaustion attacks from runaway calculations.
+- **Strict Steady-State Capacity**: Terminated workers are replaced exactly once upon exit, guaranteeing steady-state thread pool invariant `totalWorkers <= configuredWorkers` without unhandled rejections or listener leaks.
+
+### 9.2 MCP Progress Telemetry Integrity
+- **Zero Privacy Leakage in Progress**: Search progress notifications (`notifications/progress`) emit strictly integer counts (`progress: 250`, `progress: 500`), never file paths, names, or content snippets.
+- **Task Correlation**: Progress notifications from worker threads are strictly correlated to the active task ID; late progress messages arriving after tool completion or cancellation are automatically discarded.
+- **Sequential In-Order Delivery**: All progress messages are flushed to the client transport before terminal tool responses are dispatched.
 
 ### 10. Network & SSRF Security (`fetch_url`)
 - **Explicit Profile Opt-In**: Outbound network fetching is disabled by default. It is exposed exclusively when `--profile=network` (or `--profile=all`) is active.

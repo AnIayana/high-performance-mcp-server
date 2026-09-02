@@ -182,14 +182,14 @@ When preparing a new public version, maintainers follow this structured flow:
 
 1. **One-Time npm Trusted Publisher Setup** (performed once per package):
    - **Web UI (Recommended)**: On [npmjs.com](https://www.npmjs.com/package/high-performance-mcp-server/access) under *Publishing Access*, add a Trusted Publisher for GitHub Actions:
-     - Organization/User: `eminyilmz`
+     - Organization/User: `AnIayana`
      - Repository: `high-performance-mcp-server`
      - Workflow filename: `release.yml` *(must be `release.yml`, not a path)*
      - Environment: `release`
    - **CLI Alternative** (requires `npm >= 11.15.0`):
      ```bash
      npm trust github high-performance-mcp-server \
-       --repo eminyilmz/high-performance-mcp-server \
+       --repo AnIayana/high-performance-mcp-server \
        --file release.yml \
        --env release \
        --allow-publish
