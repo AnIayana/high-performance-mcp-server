@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-09-02
 
 ### Added
 
@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Guaranteed sequential delivery (`progressChain`) ensuring all in-flight `notifications/progress` messages are completely flushed to the client transport before returning final tool call results.
 - Added `AbortSignal` request cancellation support across the worker thread pool (`WorkerPool.execute`, `executeWorkerTask`), enabling immediate removal of cancelled queued tasks and prompt termination and single replacement of busy worker threads running long CPU tasks.
 - Propagated MCP request `AbortSignal` to the `heavy_compute_worker` tool handler, allowing clients to abort long-running worker calculations promptly without waiting for the 30-second task timeout.
+
+### Changed
+
+- Updated GitHub project metadata to use the renamed canonical owner `AnIayana` (`https://github.com/AnIayana/high-performance-mcp-server`).
+- The canonical MCP Registry identity moves to `io.github.AnIayana/high-performance-mcp-server` following the GitHub account rename. The historical `io.github.eminyilmz/high-performance-mcp-server` namespace entries were retired/deleted.
+- The npm package identifier remains `high-performance-mcp-server` with continuous version lineage.
 
 ### Security & Reliability
 

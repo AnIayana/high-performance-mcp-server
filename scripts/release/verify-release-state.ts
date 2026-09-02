@@ -179,9 +179,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(currentFil
 
   checkLiveReleaseState({
     packageName: "high-performance-mcp-server",
-    mcpName: "io.github.eminyilmz/high-performance-mcp-server",
+    mcpName: "io.github.AnIayana/high-performance-mcp-server",
     version,
-    repo: "eminyilmz/high-performance-mcp-server",
+    repo: "AnIayana/high-performance-mcp-server",
   }).then((state) => {
     const plan = decideReleaseAction({
       dryRun,

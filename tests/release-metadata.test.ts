@@ -24,7 +24,7 @@ test("Release Metadata Invariants — package.json and server.json synchronizati
     serverJson.version,
     "package.json version must match server.json version"
   );
-  assert.equal(packageJson.version, "0.3.0");
+  assert.equal(packageJson.version, "0.4.0");
 
   // 2. Package identifier matches
   assert.ok(
@@ -53,14 +53,14 @@ test("Release Metadata Invariants — package.json and server.json synchronizati
   );
   assert.equal(
     packageJson.mcpName,
-    "io.github.eminyilmz/high-performance-mcp-server",
+    "io.github.AnIayana/high-performance-mcp-server",
     "mcpName must match expected verified GitHub namespace"
   );
 
   // 5. Repository URL and source
   assert.equal(
     serverJson.repository?.url,
-    "https://github.com/eminyilmz/high-performance-mcp-server",
+    "https://github.com/AnIayana/high-performance-mcp-server",
     "server.json repository URL must match expected GitHub repository"
   );
   assert.equal(

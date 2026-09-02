@@ -21,7 +21,7 @@ env:
   MCP_PUBLISHER_VERSION: "1.8.1"
   PINNED_NPM_VERSION: "11.19.0"
   EXPECTED_PACKAGE_NAME: "high-performance-mcp-server"
-  EXPECTED_MCP_NAME: "io.github.eminyilmz/high-performance-mcp-server"
+  EXPECTED_MCP_NAME: "io.github.AnIayana/high-performance-mcp-server"
 
 jobs:
   validate:
