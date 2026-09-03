@@ -1063,3 +1063,237 @@ test("Parent directory boundary swap during pre-publication is rejected (access_
     await fs.rm(outsideDir, { recursive: true, force: true });
   }
 });
+
+test("write_text_file (create) — Target race immediately prior to fs.link fails with already_exists and does not clobber target", async () => {
+  const rootDir = await createTestDir("mcp-create-target-race");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "race-file.txt");
+
+    // Hook simulates concurrent file creation immediately before publication
+    _setPreRenameHookForTesting(async () => {
+      await fs.writeFile(targetFile, "CONCURRENTLY_CREATED_CONTENT", "utf8");
+    });
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "race-file.txt",
+          mode: "create",
+          content: "ATTEMPTED_CREATE_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "already_exists");
+        return true;
+      }
+    );
+
+    // Verify existing target was NOT overwritten or clobbered
+    const onDisk = await fs.readFile(targetFile, "utf8");
+    assert.equal(onDisk, "CONCURRENTLY_CREATED_CONTENT");
+
+    // Verify temp files are cleaned up
+    const dirEntries = await fs.readdir(rootDir);
+    assert.deepEqual(dirEntries, ["race-file.txt"]);
+  } finally {
+    _setPreRenameHookForTesting(undefined);
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — fs.link ENOSYS fails closed with workspace_error and does not publish via rename/copy", async () => {
+  const rootDir = await createTestDir("mcp-create-enosys");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "nosys-file.txt");
+
+    (fs as any).link = async () => {
+      const err: any = new Error("Function not implemented");
+      err.code = "ENOSYS";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "nosys-file.txt",
+          mode: "create",
+          content: "NOSYS_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        assert.match(err.message, /Filesystem does not support hard-link publication/);
+        return true;
+      }
+    );
+
+    // Target file MUST NOT exist (no rename/copy fallback)
+    await assert.rejects(async () => fs.lstat(targetFile), { code: "ENOENT" });
+
+    // Temp files MUST be cleaned up
+    const dirEntries = await fs.readdir(rootDir);
+    assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — fs.link EXDEV fails closed with workspace_error", async () => {
+  const rootDir = await createTestDir("mcp-create-exdev");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "exdev-file.txt");
+
+    (fs as any).link = async () => {
+      const err: any = new Error("Invalid cross-device link");
+      err.code = "EXDEV";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "exdev-file.txt",
+          mode: "create",
+          content: "EXDEV_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        assert.match(err.message, /Filesystem does not support hard-link publication/);
+        return true;
+      }
+    );
+
+    // Target must not exist
+    await assert.rejects(async () => fs.lstat(targetFile), { code: "ENOENT" });
+
+    // Temp file must be cleaned up
+    const dirEntries = await fs.readdir(rootDir);
+    assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — fs.link EOPNOTSUPP / ENOTSUP fails closed with workspace_error", async () => {
+  const rootDir = await createTestDir("mcp-create-enotsup");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "enotsup-file.txt");
+
+    (fs as any).link = async () => {
+      const err: any = new Error("Operation not supported");
+      err.code = "EOPNOTSUPP";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "enotsup-file.txt",
+          mode: "create",
+          content: "ENOTSUP_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        assert.match(err.message, /Filesystem does not support hard-link publication/);
+        return true;
+      }
+    );
+
+    await assert.rejects(async () => fs.lstat(targetFile), { code: "ENOENT" });
+    const dirEntries = await fs.readdir(rootDir);
+    assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — fs.link EPERM with absent target throws workspace_error (not falsely already_exists)", async () => {
+  const rootDir = await createTestDir("mcp-create-eperm-absent");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "eperm-file.txt");
+
+    (fs as any).link = async () => {
+      const err: any = new Error("Operation not permitted");
+      err.code = "EPERM";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "eperm-file.txt",
+          mode: "create",
+          content: "EPERM_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        assert.match(err.message, /permissions or hard-link policy/);
+        return true;
+      }
+    );
+
+    await assert.rejects(async () => fs.lstat(targetFile), { code: "ENOENT" });
+    const dirEntries = await fs.readdir(rootDir);
+    assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — fs.link EPERM with existing target maps to already_exists", async () => {
+  const rootDir = await createTestDir("mcp-create-eperm-exists");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "eperm-exists-file.txt");
+
+    // Pre-publication hook creates file so it exists when link fails with EPERM
+    _setPreRenameHookForTesting(async () => {
+      await fs.writeFile(targetFile, "ALREADY_PRESENT", "utf8");
+    });
+
+    (fs as any).link = async () => {
+      const err: any = new Error("Operation not permitted (Windows existing file access denied)");
+      err.code = "EPERM";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "eperm-exists-file.txt",
+          mode: "create",
+          content: "EPERM_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "already_exists");
+        return true;
+      }
+    );
+
+    const onDisk = await fs.readFile(targetFile, "utf8");
+    assert.equal(onDisk, "ALREADY_PRESENT");
+  } finally {
+    _setPreRenameHookForTesting(undefined);
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+

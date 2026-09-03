@@ -516,32 +516,46 @@ export async function writeTextFileService(
         await fs.unlink(tempFilePath);
         tempFileCreated = false;
       } catch (linkErr: any) {
-        if (linkErr.code === "EEXIST" || linkErr.code === "EPERM") {
+        if (linkErr.code === "EEXIST") {
           throw new WorkspaceSecurityError(
             "already_exists",
             `File already exists: "${input.path}" within root "${resolved.root.name}".`
           );
         }
-        // If filesystem does not support hard links, fallback to verified atomic rename
-        if (linkErr.code === "ENOSYS" || linkErr.code === "EXDEV") {
-          let recheckExists = false;
+        if (linkErr.code === "EPERM") {
+          let targetActuallyExists = false;
           try {
             await fs.lstat(resolved.targetPath);
-            recheckExists = true;
+            targetActuallyExists = true;
           } catch {
-            recheckExists = false;
+            targetActuallyExists = false;
           }
-          if (recheckExists) {
+          if (targetActuallyExists) {
             throw new WorkspaceSecurityError(
               "already_exists",
               `File already exists: "${input.path}" within root "${resolved.root.name}".`
             );
           }
-          await fs.rename(tempFilePath, resolved.targetPath);
-          tempFileCreated = false;
-        } else {
-          throw linkErr;
+          throw new WorkspaceSecurityError(
+            "workspace_error",
+            `Cannot create file "${input.path}" due to filesystem permissions or hard-link policy.`
+          );
         }
+        if (
+          linkErr.code === "ENOSYS" ||
+          linkErr.code === "EXDEV" ||
+          linkErr.code === "EOPNOTSUPP" ||
+          linkErr.code === "ENOTSUP"
+        ) {
+          throw new WorkspaceSecurityError(
+            "workspace_error",
+            `Cannot create file "${input.path}" atomically: Filesystem does not support hard-link publication.`
+          );
+        }
+        throw new WorkspaceSecurityError(
+          "workspace_error",
+          `Failed to publish file "${input.path}": ${linkErr.message || String(linkErr)}`
+        );
       }
     } else {
       // For overwrite: verify target is still regular file and hash still matches
