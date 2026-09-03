@@ -441,3 +441,79 @@ test("TEST 16 — Search final progress normalization matrix", async () => {
     fixture.cleanup();
   }
 });
+
+test("Workspace Search — searchTextService contextLines behavior and boundaries", async () => {
+  const fixture = createSearchFixture();
+  try {
+    const multiLineFile = path.join(fixture.rootDir, "src", "multiline.txt");
+    const lines = [
+      "Line 1: Header",
+      "Line 2: Import module",
+      "Line 3: Setup configuration",
+      "Line 4: TARGET MATCH HERE",
+      "Line 5: Execute step A",
+      "Line 6: Execute step B",
+      "Line 7: Cleanup resources",
+      "Line 8: Footer",
+    ];
+    fs.writeFileSync(multiLineFile, lines.join("\n"), "utf-8");
+
+    // 1. contextLines omitted -> contextBefore/contextAfter are undefined
+    const resOmitted = await searchTextService(fixture.config, "root-1", "TARGET MATCH HERE");
+    assert.equal(resOmitted.results.length, 1);
+    assert.equal(resOmitted.results[0]?.line, 4);
+    assert.equal(resOmitted.results[0]?.contextBefore, undefined);
+    assert.equal(resOmitted.results[0]?.contextAfter, undefined);
+
+    // 2. contextLines = 0 -> contextBefore/contextAfter are undefined
+    const resZero = await searchTextService(fixture.config, "root-1", "TARGET MATCH HERE", { contextLines: 0 });
+    assert.equal(resZero.results.length, 1);
+    assert.equal(resZero.results[0]?.contextBefore, undefined);
+    assert.equal(resZero.results[0]?.contextAfter, undefined);
+
+    // 3. contextLines = 2 -> 2 lines before, 2 lines after
+    const resTwo = await searchTextService(fixture.config, "root-1", "TARGET MATCH HERE", { contextLines: 2 });
+    assert.equal(resTwo.results.length, 1);
+    const match2 = resTwo.results[0]!;
+    assert.equal(match2.line, 4);
+    assert.deepEqual(match2.contextBefore, ["Line 2: Import module", "Line 3: Setup configuration"]);
+    assert.deepEqual(match2.contextAfter, ["Line 5: Execute step A", "Line 6: Execute step B"]);
+
+    // 4. BOF boundary test (match on line 1)
+    const resBof = await searchTextService(fixture.config, "root-1", "Line 1: Header", { contextLines: 3 });
+    assert.equal(resBof.results.length, 1);
+    const matchBof = resBof.results[0]!;
+    assert.deepEqual(matchBof.contextBefore, [], "BOF match has empty contextBefore");
+    assert.deepEqual(matchBof.contextAfter, ["Line 2: Import module", "Line 3: Setup configuration", "Line 4: TARGET MATCH HERE"]);
+
+    // 5. EOF boundary test (match on line 8)
+    const resEof = await searchTextService(fixture.config, "root-1", "Line 8: Footer", { contextLines: 3 });
+    assert.equal(resEof.results.length, 1);
+    const matchEof = resEof.results[0]!;
+    assert.deepEqual(matchEof.contextBefore, ["Line 5: Execute step A", "Line 6: Execute step B", "Line 7: Cleanup resources"]);
+    assert.deepEqual(matchEof.contextAfter, [], "EOF match has empty contextAfter");
+
+    // 6. CRLF handling and empty lines
+    const crlfFile = path.join(fixture.rootDir, "src", "crlf.txt");
+    fs.writeFileSync(crlfFile, "First CRLF line\r\n\r\nMATCH CRLF\r\n\r\nLast CRLF line\r\n", "utf-8");
+    const resCrlf = await searchTextService(fixture.config, "root-1", "MATCH CRLF", { contextLines: 2 });
+    assert.equal(resCrlf.results.length, 1);
+    const matchCrlf = resCrlf.results[0]!;
+    assert.deepEqual(matchCrlf.contextBefore, ["First CRLF line", ""]);
+    assert.deepEqual(matchCrlf.contextAfter, ["", "Last CRLF line"]);
+
+    // 7. Long context line truncation at 300 characters
+    const longLineFile = path.join(fixture.rootDir, "src", "longline.txt");
+    const veryLongLine = "X".repeat(500);
+    fs.writeFileSync(longLineFile, `${veryLongLine}\nMATCH LONG\n${veryLongLine}\n`, "utf-8");
+    const resLong = await searchTextService(fixture.config, "root-1", "MATCH LONG", { contextLines: 1 });
+    assert.equal(resLong.results.length, 1);
+    const matchLong = resLong.results[0]!;
+    assert.equal(matchLong.contextBefore?.[0]?.length, 303, "300 chars + '...' suffix");
+    assert.ok(matchLong.contextBefore?.[0]?.endsWith("..."));
+    assert.equal(matchLong.contextAfter?.[0]?.length, 303);
+    assert.ok(matchLong.contextAfter?.[0]?.endsWith("..."));
+  } finally {
+    fixture.cleanup();
+  }
+});

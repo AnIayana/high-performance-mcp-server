@@ -173,3 +173,55 @@ test("Workspace Service — readTextFileService rejects directories", async () =
     fixture.cleanup();
   }
 });
+
+test("Workspace Service — listDirectoryService maxDepth recursive traversal and relativePath", async () => {
+  const fixture = createWorkspaceFixture();
+  try {
+    // Setup nested structure:
+    // root/
+    //   nested/
+    //     level1.txt
+    //     deep/
+    //       level2.txt
+    //       very_deep/
+    //         level3.txt
+    const nestedDir = path.join(fixture.tempDir, "nested");
+    const deepDir = path.join(nestedDir, "deep");
+    const veryDeepDir = path.join(deepDir, "very_deep");
+
+    fs.mkdirSync(veryDeepDir, { recursive: true });
+    fs.writeFileSync(path.join(nestedDir, "level1.txt"), "level 1 content");
+    fs.writeFileSync(path.join(deepDir, "level2.txt"), "level 2 content");
+    fs.writeFileSync(path.join(veryDeepDir, "level3.txt"), "level 3 content");
+
+    // 1. maxDepth = 1 -> only immediate entries, relativePath undefined
+    const resDepth1 = await listDirectoryService(fixture.config, "root-1", "nested", 1);
+    assert.equal(resDepth1.entries.length, 2); // deep (dir) and level1.txt (file)
+    assert.equal(resDepth1.entries[0]?.name, "deep");
+    assert.equal(resDepth1.entries[0]?.relativePath, undefined);
+    assert.equal(resDepth1.entries[1]?.name, "level1.txt");
+    assert.equal(resDepth1.entries[1]?.relativePath, undefined);
+
+    // 2. maxDepth = 2 -> includes deep/level2.txt and deep/very_deep, with relativePath
+    const resDepth2 = await listDirectoryService(fixture.config, "root-1", "nested", 2);
+    // Depth 1: deep (dir), level1.txt (file)
+    // Depth 2: very_deep (dir), level2.txt (file)
+    const relPaths = resDepth2.entries.map((e) => e.relativePath);
+    assert.ok(relPaths.includes("deep"));
+    assert.ok(relPaths.includes("level1.txt"));
+    assert.ok(relPaths.includes("deep/very_deep"));
+    assert.ok(relPaths.includes("deep/level2.txt"));
+    assert.ok(!relPaths.includes("deep/very_deep/level3.txt"), "Depth 2 must not reach level 3");
+
+    // Verify name remains basename
+    const level2Entry = resDepth2.entries.find((e) => e.relativePath === "deep/level2.txt");
+    assert.equal(level2Entry?.name, "level2.txt", "name must remain basename");
+
+    // 3. maxDepth = 4 -> reaches level 3
+    const resDepth4 = await listDirectoryService(fixture.config, "root-1", "nested", 4);
+    const relPaths4 = resDepth4.entries.map((e) => e.relativePath);
+    assert.ok(relPaths4.includes("deep/very_deep/level3.txt"));
+  } finally {
+    fixture.cleanup();
+  }
+});

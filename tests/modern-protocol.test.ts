@@ -720,4 +720,94 @@ test("Modern MCP Protocol — Native Progress Normalization & Coverage (Search &
   }
 });
 
+test("MCP Protocol — tools/list schema and execution for search_text contextLines and list_directory maxDepth", async () => {
+  const fixture = createModernWorkspaceFixture();
+  const workspaceConfig = await resolveWorkspaceConfig([fixture.tempDir]);
+  const rootId = workspaceConfig.roots[0]!.id;
+  const serverInstance = await createHttpTransportServer(0, "all", workspaceConfig);
+
+  const client = new Client(
+    { name: "test-client-m1", version: "1.0.0" },
+    { capabilities: {} }
+  );
+  const clientTransport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+  );
+
+  try {
+    await client.connect(clientTransport);
+
+    // 1. Verify tools/list schema includes contextLines and maxDepth
+    const toolsList = await client.listTools();
+    const searchTextTool = toolsList.tools.find((t) => t.name === "search_text");
+    const listDirTool = toolsList.tools.find((t) => t.name === "list_directory");
+
+    assert.ok(searchTextTool, "search_text must be listed");
+    assert.ok(listDirTool, "list_directory must be listed");
+
+    const searchProps = (searchTextTool.inputSchema as any)?.properties;
+    assert.ok(searchProps?.contextLines, "search_text inputSchema must have contextLines");
+
+    const listDirProps = (listDirTool.inputSchema as any)?.properties;
+    assert.ok(listDirProps?.maxDepth, "list_directory inputSchema must have maxDepth");
+
+    // 2. Call search_text with contextLines over MCP
+    const searchRes = await client.callTool({
+      name: "search_text",
+      arguments: {
+        rootId,
+        query: "alpha77",
+        contextLines: 1,
+      },
+    });
+    assert.ok(!searchRes.isError, "search_text must succeed");
+    const searchStructured = (searchRes as any).structuredContent;
+    assert.ok(searchStructured.results.length > 0);
+    const firstMatch = searchStructured.results[0];
+    assert.ok(Array.isArray(firstMatch.contextBefore));
+    assert.ok(Array.isArray(firstMatch.contextAfter));
+
+    // 3. Call list_directory with maxDepth over MCP
+    const listRes = await client.callTool({
+      name: "list_directory",
+      arguments: {
+        rootId,
+        path: ".",
+        maxDepth: 2,
+      },
+    });
+    assert.ok(!listRes.isError, "list_directory must succeed");
+    const listStructured = (listRes as any).structuredContent;
+    assert.ok(listStructured.entries.length > 0);
+    const entryWithRel = listStructured.entries.find((e: any) => e.relativePath);
+    assert.ok(entryWithRel, "maxDepth=2 entries must include relativePath");
+
+    // 4. Schema rejection for out-of-range contextLines (>10)
+    const invalidSearchRes = await client.callTool({
+      name: "search_text",
+      arguments: {
+        rootId,
+        query: "alpha77",
+        contextLines: 15,
+      },
+    });
+    assert.ok(invalidSearchRes.isError, "contextLines > 10 must return error");
+
+    // 5. Schema rejection for out-of-range maxDepth (>5)
+    const invalidListRes = await client.callTool({
+      name: "list_directory",
+      arguments: {
+        rootId,
+        path: ".",
+        maxDepth: 10,
+      },
+    });
+    assert.ok(invalidListRes.isError, "maxDepth > 5 must return error");
+  } finally {
+    await client.close();
+    await serverInstance.close();
+    fixture.cleanup();
+  }
+});
+
 
