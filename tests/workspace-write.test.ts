@@ -897,6 +897,47 @@ test("write_text_file — Public Zod Schema strict validation contracts (create 
   });
   assert.equal(validCreate.success, true);
 
+  // 1a. Create with createParents=true is valid
+  const validCreateWithParents = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
+    path: "test.txt",
+    mode: "create",
+    content: "hello",
+    createParents: true,
+  });
+  assert.equal(validCreateWithParents.success, true);
+
+  // 1b. Create with createParents=false is valid
+  const validCreateWithParentsFalse = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
+    path: "test.txt",
+    mode: "create",
+    content: "hello",
+    createParents: false,
+  });
+  assert.equal(validCreateWithParentsFalse.success, true);
+
+  // 1c. Create with non-boolean createParents is rejected
+  const invalidCreateParentsType = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
+    path: "test.txt",
+    mode: "create",
+    content: "hello",
+    createParents: "true" as any,
+  });
+  assert.equal(invalidCreateParentsType.success, false);
+
+  // 1d. Overwrite with createParents is strictly rejected
+  const overwriteWithCreateParents = writeTextFileInputSchema.safeParse({
+    rootId: "root-1",
+    path: "test.txt",
+    mode: "overwrite",
+    content: "hello",
+    expectedSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    createParents: true,
+  });
+  assert.equal(overwriteWithCreateParents.success, false);
+
   // 2. Create with expectedSha256 is strictly rejected
   const createWithHash = writeTextFileInputSchema.safeParse({
     rootId: "root-1",
@@ -1338,6 +1379,405 @@ test("write_text_file (create) — Unexpected fs.link publication error is sanit
     // Temp files must be cleaned up
     const dirEntries = await fs.readdir(rootDir);
     assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — single missing parent created (createParents=true)", async () => {
+  const rootDir = await createTestDir("mcp-create-parents-single");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const result = await writeTextFileService(config, {
+      path: "dir/newfile.txt",
+      mode: "create",
+      content: "SINGLE_PARENT_CONTENT",
+      createParents: true,
+    });
+
+    assert.equal(result.mode, "create");
+    assert.equal(result.path.replace(/\\/g, "/"), "dir/newfile.txt");
+    const onDisk = await fs.readFile(path.join(rootDir, "dir", "newfile.txt"), "utf8");
+    assert.equal(onDisk, "SINGLE_PARENT_CONTENT");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — deep nested parents created (createParents=true)", async () => {
+  const rootDir = await createTestDir("mcp-create-parents-deep");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const result = await writeTextFileService(config, {
+      path: "a/b/c/d/deepfile.txt",
+      mode: "create",
+      content: "DEEP_NESTED_CONTENT",
+      createParents: true,
+    });
+
+    assert.equal(result.mode, "create");
+    assert.equal(result.path.replace(/\\/g, "/"), "a/b/c/d/deepfile.txt");
+    const onDisk = await fs.readFile(path.join(rootDir, "a", "b", "c", "d", "deepfile.txt"), "utf8");
+    assert.equal(onDisk, "DEEP_NESTED_CONTENT");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — mix of existing and missing parents created", async () => {
+  const rootDir = await createTestDir("mcp-create-parents-mix");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    await fs.mkdir(path.join(rootDir, "existing_dir"));
+    const result = await writeTextFileService(config, {
+      path: "existing_dir/sub1/sub2/file.txt",
+      mode: "create",
+      content: "MIX_CONTENT",
+      createParents: true,
+    });
+
+    assert.equal(result.mode, "create");
+    const onDisk = await fs.readFile(path.join(rootDir, "existing_dir", "sub1", "sub2", "file.txt"), "utf8");
+    assert.equal(onDisk, "MIX_CONTENT");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — existing parent directory unaffected", async () => {
+  const rootDir = await createTestDir("mcp-create-parents-existing");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    await fs.mkdir(path.join(rootDir, "existing_dir"));
+    await fs.writeFile(path.join(rootDir, "existing_dir", "other.txt"), "EXISTING", "utf8");
+
+    const result = await writeTextFileService(config, {
+      path: "existing_dir/new.txt",
+      mode: "create",
+      content: "NEW_IN_EXISTING",
+      createParents: true,
+    });
+
+    assert.equal(result.mode, "create");
+    const otherOnDisk = await fs.readFile(path.join(rootDir, "existing_dir", "other.txt"), "utf8");
+    assert.equal(otherOnDisk, "EXISTING");
+    const newOnDisk = await fs.readFile(path.join(rootDir, "existing_dir", "new.txt"), "utf8");
+    assert.equal(newOnDisk, "NEW_IN_EXISTING");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — createParents omitted with missing parent fails with missing_parent", async () => {
+  const rootDir = await createTestDir("mcp-create-missing-parent-omitted");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "missing_dir/file.txt",
+          mode: "create",
+          content: "OMITTED_PARENTS_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "missing_parent");
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — createParents=false with missing parent fails with missing_parent", async () => {
+  const rootDir = await createTestDir("mcp-create-missing-parent-false");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "missing_dir/file.txt",
+          mode: "create",
+          content: "FALSE_PARENTS_CONTENT",
+          createParents: false,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "missing_parent");
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — intermediate regular file fails with invalid_path", async () => {
+  const rootDir = await createTestDir("mcp-create-intermediate-file");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    await fs.writeFile(path.join(rootDir, "regular_file.txt"), "REGULAR", "utf8");
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "regular_file.txt/child.txt",
+          mode: "create",
+          content: "CHILD_CONTENT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "invalid_path");
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — intermediate symlink escaping root rejected (access_denied)", async () => {
+  const rootDir = await createTestDir("mcp-create-symlink-escape");
+  const outsideDir = await createTestDir("mcp-outside-symlink");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    try {
+      await fs.symlink(outsideDir, path.join(rootDir, "outside_symlink"), "junction");
+    } catch {
+      // If symlink creation not permitted on this host, skip narrowly
+      return;
+    }
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "outside_symlink/sub/escaped.txt",
+          mode: "create",
+          content: "ESCAPED_CONTENT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "access_denied");
+        return true;
+      }
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — mkdir EEXIST race safely accepts existing directory", async () => {
+  const rootDir = await createTestDir("mcp-create-race-eexist");
+  const origMkdir = fs.mkdir;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetDir = path.join(rootDir, "raced_dir");
+
+    // Simulate mkdir race: creates dir on disk and throws EEXIST
+    (fs as any).mkdir = async (dirPath: string, opts: any) => {
+      await origMkdir.call(fs, dirPath, { recursive: true });
+      const err: any = new Error("EEXIST: file already exists");
+      err.code = "EEXIST";
+      throw err;
+    };
+
+    const result = await writeTextFileService(config, {
+      path: "raced_dir/file.txt",
+      mode: "create",
+      content: "RACED_DIR_CONTENT",
+      createParents: true,
+    });
+
+    assert.equal(result.mode, "create");
+    const onDisk = await fs.readFile(path.join(targetDir, "file.txt"), "utf8");
+    assert.equal(onDisk, "RACED_DIR_CONTENT");
+  } finally {
+    (fs as any).mkdir = origMkdir;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — mkdir EEXIST race with non-directory fails with invalid_path", async () => {
+  const rootDir = await createTestDir("mcp-create-race-file");
+  const origMkdir = fs.mkdir;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+
+    // Simulate mkdir race where path is created as a file
+    (fs as any).mkdir = async (dirPath: string, opts: any) => {
+      await fs.writeFile(dirPath, "COLLIDED_FILE", "utf8");
+      const err: any = new Error("EEXIST: file already exists");
+      err.code = "EEXIST";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "raced_segment/file.txt",
+          mode: "create",
+          content: "CONTENT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "invalid_path");
+        return true;
+      }
+    );
+  } finally {
+    (fs as any).mkdir = origMkdir;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — final target already exists fails with already_exists and does not clobber", async () => {
+  const rootDir = await createTestDir("mcp-create-target-exists");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    await fs.mkdir(path.join(rootDir, "sub"));
+    const targetFile = path.join(rootDir, "sub", "existing_file.txt");
+    await fs.writeFile(targetFile, "ORIGINAL_FILE_CONTENT", "utf8");
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "sub/existing_file.txt",
+          mode: "create",
+          content: "NEW_OVERWRITE_ATTEMPT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "already_exists");
+        return true;
+      }
+    );
+
+    const onDisk = await fs.readFile(targetFile, "utf8");
+    assert.equal(onDisk, "ORIGINAL_FILE_CONTENT");
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — final target appears during publication race fails with already_exists", async () => {
+  const rootDir = await createTestDir("mcp-create-target-pub-race");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "new_dir", "race_file.txt");
+
+    _setPreRenameHookForTesting(async () => {
+      await fs.writeFile(targetFile, "CONCURRENT_CREATION", "utf8");
+    });
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "new_dir/race_file.txt",
+          mode: "create",
+          content: "MY_CONTENT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "already_exists");
+        return true;
+      }
+    );
+
+    const onDisk = await fs.readFile(targetFile, "utf8");
+    assert.equal(onDisk, "CONCURRENT_CREATION");
+  } finally {
+    _setPreRenameHookForTesting(undefined);
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — unsupported fs.link publication after dirs created fails with workspace_error", async () => {
+  const rootDir = await createTestDir("mcp-create-unsupported-link");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    (fs as any).link = async () => {
+      const err: any = new Error("Function not implemented");
+      err.code = "ENOSYS";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "created_dir/unsupported.txt",
+          mode: "create",
+          content: "UNSUPPORTED_CONTENT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        assert.equal(err.message.includes("does not support hard-link publication"), true);
+        return true;
+      }
+    );
+
+    // Parent directory was created and remains
+    const dirStats = await fs.stat(path.join(rootDir, "created_dir"));
+    assert.equal(dirStats.isDirectory(), true);
+
+    // Target file is NOT created
+    await assert.rejects(async () => fs.lstat(path.join(rootDir, "created_dir", "unsupported.txt")), { code: "ENOENT" });
+
+    // Temp files cleaned up
+    const dirEntries = await fs.readdir(path.join(rootDir, "created_dir"));
+    assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("write_text_file (create) — partial side effects: created parent directories remain after target publication failure", async () => {
+  const rootDir = await createTestDir("mcp-create-partial-side-effects");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    (fs as any).link = async () => {
+      const err: any = new Error("EPROTO: protocol error");
+      err.code = "EPROTO";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "part_a/part_b/part_c/file.txt",
+          mode: "create",
+          content: "PARTIAL_CONTENT",
+          createParents: true,
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        return true;
+      }
+    );
+
+    // Parent directories were created and remain on disk (partial side-effect contract)
+    const partCStats = await fs.stat(path.join(rootDir, "part_a", "part_b", "part_c"));
+    assert.equal(partCStats.isDirectory(), true);
+
+    // Target file was NOT created
+    await assert.rejects(async () => fs.lstat(path.join(rootDir, "part_a", "part_b", "part_c", "file.txt")), { code: "ENOENT" });
+
+    // Temp files in part_c are cleanly unlinked
+    const entries = await fs.readdir(path.join(rootDir, "part_a", "part_b", "part_c"));
+    assert.deepEqual(entries, []);
   } finally {
     (fs as any).link = origLink;
     await fs.rm(rootDir, { recursive: true, force: true });

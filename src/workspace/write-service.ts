@@ -68,6 +68,7 @@ export interface WriteTextFileInput {
   path: string;
   mode: WriteMode;
   content: string;
+  createParents?: boolean;
   expectedSha256?: string;
   operatorPolicy?: WorkspaceOperatorPolicy;
 }
@@ -192,7 +193,8 @@ export async function resolveWritePathWithinRoot(
   workspaceConfig: WorkspaceConfig | undefined,
   rootId: string | undefined,
   relativePath: string,
-  isCreate: boolean
+  isCreate: boolean,
+  createParents?: boolean
 ): Promise<ResolvedWritePathResult> {
   const root = resolveRoot(workspaceConfig, rootId);
 
@@ -243,7 +245,101 @@ export async function resolveWritePathWithinRoot(
       );
     }
 
-    // Securely validate nearest parent directory
+    if (createParents === true) {
+      // Read-only preflight for createParents=true:
+      // Inspect existing directory segments in read-only mode without mutating the filesystem
+      const parentRel = path.dirname(trimmedPath);
+      if (parentRel !== "." && parentRel !== "") {
+        const segments = parentRel.split(/[\\/]+/).filter(Boolean);
+        let currentDir = root.realPath;
+        for (const segment of segments) {
+          if (segment === "." || segment === "..") {
+            throw new WorkspaceSecurityError("invalid_path", `Invalid path segment "${segment}".`);
+          }
+          const candidate = path.join(currentDir, segment);
+          if (!isContainedWithinRoot(root.realPath, candidate)) {
+            throw new WorkspaceSecurityError(
+              "access_denied",
+              `Access denied: Parent path escapes root boundary "${root.name}".`
+            );
+          }
+          let segStats: Stats | undefined;
+          try {
+            segStats = await fs.lstat(candidate);
+          } catch {
+            segStats = undefined;
+          }
+          if (segStats) {
+            if (segStats.isSymbolicLink()) {
+              let canonicalSeg: string;
+              try {
+                canonicalSeg = await fs.realpath(candidate);
+              } catch {
+                throw new WorkspaceSecurityError(
+                  "access_denied",
+                  `Cannot resolve symlink at path segment "${segment}".`
+                );
+              }
+              if (!isContainedWithinRoot(root.realPath, canonicalSeg)) {
+                throw new WorkspaceSecurityError(
+                  "access_denied",
+                  `Access denied: Symlink at "${segment}" escapes root boundary "${root.name}".`
+                );
+              }
+              const symTargetStats = await fs.stat(canonicalSeg);
+              if (!symTargetStats.isDirectory()) {
+                throw new WorkspaceSecurityError(
+                  "invalid_path",
+                  `Intermediate path segment "${segment}" is a file, not a directory.`
+                );
+              }
+              currentDir = canonicalSeg;
+            } else if (!segStats.isDirectory()) {
+              throw new WorkspaceSecurityError(
+                "invalid_path",
+                `Intermediate path segment "${segment}" is a file, not a directory.`
+              );
+            } else {
+              let canonicalSeg: string;
+              try {
+                canonicalSeg = await fs.realpath(candidate);
+              } catch {
+                throw new WorkspaceSecurityError(
+                  "workspace_error",
+                  `Cannot resolve canonical path for directory "${segment}".`
+                );
+              }
+              if (!isContainedWithinRoot(root.realPath, canonicalSeg)) {
+                throw new WorkspaceSecurityError(
+                  "access_denied",
+                  `Access denied: Directory "${segment}" escapes root boundary "${root.name}".`
+                );
+              }
+              currentDir = canonicalSeg;
+            }
+          } else {
+            // Missing parent segment reached during read-only preflight: allowed to proceed
+            break;
+          }
+        }
+      }
+
+      const fileName = path.basename(initialTargetPath);
+      if (!fileName || fileName === "." || fileName === "..") {
+        throw new WorkspaceSecurityError("invalid_path", `Invalid filename for: "${relativePath}".`);
+      }
+
+      const relFromRoot = path.relative(root.realPath, initialTargetPath) || fileName;
+
+      return {
+        targetPath: initialTargetPath,
+        relativeToRoot: relFromRoot,
+        root,
+        exists: false,
+      };
+    }
+
+    // Securely validate nearest parent directory (createParents omitted / false)
     const parentDir = path.dirname(initialTargetPath);
     let parentStats: Stats;
     try {
@@ -367,6 +463,210 @@ export async function resolveWritePathWithinRoot(
 }
 
 /**
+ * Safely creates missing intermediate parent directories segment-by-segment
+ * ensuring lexical and canonical containment at every step.
+ */
+async function ensureParentDirectories(
+  root: WorkspaceRoot,
+  relativePath: string
+): Promise<string> {
+  const trimmedPath = relativePath.trim();
+  const parentRel = path.dirname(trimmedPath);
+  if (parentRel === "." || parentRel === "") {
+    return root.realPath;
+  }
+
+  const segments = parentRel.split(/[\\/]+/).filter(Boolean);
+  let currentDir = root.realPath;
+
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") {
+      throw new WorkspaceSecurityError("invalid_path", `Invalid path segment "${segment}".`);
+    }
+
+    const candidate = path.join(currentDir, segment);
+    if (!isContainedWithinRoot(root.realPath, candidate)) {
+      throw new WorkspaceSecurityError(
+        "access_denied",
+        `Access denied: Parent path escapes root boundary "${root.name}".`
+      );
+    }
+
+    let stats: Stats | undefined;
+    try {
+      stats = await fs.lstat(candidate);
+    } catch (err: any) {
+      if (err.code === "ENOENT") {
+        stats = undefined;
+      } else {
+        throw new WorkspaceSecurityError(
+          "workspace_error",
+          `Failed to inspect path segment "${segment}" due to a filesystem error.`
+        );
+      }
+    }
+
+    if (stats) {
+      if (stats.isSymbolicLink()) {
+        let canonicalCandidate: string;
+        try {
+          canonicalCandidate = await fs.realpath(candidate);
+        } catch {
+          throw new WorkspaceSecurityError(
+            "access_denied",
+            `Cannot resolve symlink at path segment "${segment}".`
+          );
+        }
+        if (!isContainedWithinRoot(root.realPath, canonicalCandidate)) {
+          throw new WorkspaceSecurityError(
+            "access_denied",
+            `Access denied: Symlink at "${segment}" escapes root boundary "${root.name}".`
+          );
+        }
+        let symTargetStats: Stats;
+        try {
+          symTargetStats = await fs.stat(canonicalCandidate);
+        } catch {
+          throw new WorkspaceSecurityError(
+            "workspace_error",
+            `Cannot inspect target of symlink at "${segment}".`
+          );
+        }
+        if (!symTargetStats.isDirectory()) {
+          throw new WorkspaceSecurityError(
+            "invalid_path",
+            `Intermediate path segment "${segment}" resolves to a file, not a directory.`
+          );
+        }
+        currentDir = canonicalCandidate;
+      } else if (!stats.isDirectory()) {
+        throw new WorkspaceSecurityError(
+          "invalid_path",
+          `Intermediate path segment "${segment}" is a file, not a directory.`
+        );
+      } else {
+        let canonicalCandidate: string;
+        try {
+          canonicalCandidate = await fs.realpath(candidate);
+        } catch {
+          throw new WorkspaceSecurityError(
+            "workspace_error",
+            `Cannot resolve canonical path for directory "${segment}".`
+          );
+        }
+        if (!isContainedWithinRoot(root.realPath, canonicalCandidate)) {
+          throw new WorkspaceSecurityError(
+            "access_denied",
+            `Access denied: Directory "${segment}" escapes root boundary "${root.name}".`
+          );
+        }
+        currentDir = canonicalCandidate;
+      }
+    } else {
+      // Segment is missing: revalidate current parent canonical containment before creating
+      const canonicalParent = await fs.realpath(currentDir);
+      if (!isContainedWithinRoot(root.realPath, canonicalParent)) {
+        throw new WorkspaceSecurityError(
+          "access_denied",
+          `Access denied: Parent directory escaped root boundary "${root.name}".`
+        );
+      }
+
+      try {
+        await fs.mkdir(candidate, { recursive: false });
+      } catch (mkdirErr: any) {
+        if (mkdirErr.code === "EEXIST") {
+          // Race condition: another process created the path concurrently
+          let raceStats: Stats;
+          try {
+            raceStats = await fs.lstat(candidate);
+          } catch {
+            throw new WorkspaceSecurityError(
+              "workspace_error",
+              `Failed to verify directory "${segment}" after creation collision.`
+            );
+          }
+          if (raceStats.isSymbolicLink()) {
+            let canonicalRace: string;
+            try {
+              canonicalRace = await fs.realpath(candidate);
+            } catch {
+              throw new WorkspaceSecurityError(
+                "access_denied",
+                `Cannot resolve symlink at collided path segment "${segment}".`
+              );
+            }
+            if (!isContainedWithinRoot(root.realPath, canonicalRace)) {
+              throw new WorkspaceSecurityError(
+                "access_denied",
+                `Access denied: Collided symlink at "${segment}" escapes root boundary "${root.name}".`
+              );
+            }
+            const symRaceStats = await fs.stat(canonicalRace);
+            if (!symRaceStats.isDirectory()) {
+              throw new WorkspaceSecurityError(
+                "invalid_path",
+                `Intermediate path segment "${segment}" collided with a non-directory.`
+              );
+            }
+            currentDir = canonicalRace;
+            continue;
+          }
+          if (!raceStats.isDirectory()) {
+            throw new WorkspaceSecurityError(
+              "invalid_path",
+              `Intermediate path segment "${segment}" collided with a non-directory.`
+            );
+          }
+          let canonicalRace: string;
+          try {
+            canonicalRace = await fs.realpath(candidate);
+          } catch {
+            throw new WorkspaceSecurityError(
+              "workspace_error",
+              `Cannot resolve canonical path for directory "${segment}".`
+            );
+          }
+          if (!isContainedWithinRoot(root.realPath, canonicalRace)) {
+            throw new WorkspaceSecurityError(
+              "access_denied",
+              `Access denied: Directory "${segment}" escapes root boundary "${root.name}".`
+            );
+          }
+          currentDir = canonicalRace;
+          continue;
+        }
+
+        throw new WorkspaceSecurityError(
+          "workspace_error",
+          `Failed to create directory "${segment}" due to a filesystem error.`
+        );
+      }
+
+      // Successfully created segment
+      let canonicalNewDir: string;
+      try {
+        canonicalNewDir = await fs.realpath(candidate);
+      } catch {
+        throw new WorkspaceSecurityError(
+          "workspace_error",
+          `Failed to resolve realpath for newly created directory "${segment}".`
+        );
+      }
+      if (!isContainedWithinRoot(root.realPath, canonicalNewDir)) {
+        throw new WorkspaceSecurityError(
+          "access_denied",
+          `Access denied: Newly created directory "${segment}" escapes root boundary "${root.name}".`
+        );
+      }
+      currentDir = canonicalNewDir;
+    }
+  }
+
+  return currentDir;
+}
+
+/**
  * Performs a safe, atomic text file write or creation within an allowlisted workspace root.
  */
 export async function writeTextFileService(
@@ -382,6 +682,15 @@ export async function writeTextFileService(
   }
 
   const isCreate = mode === "create";
+  const createParents = isCreate ? input.createParents === true : false;
+
+  if (!isCreate && input.createParents !== undefined) {
+    throw new WorkspaceSecurityError(
+      "invalid_input",
+      "createParents is forbidden when mode is 'overwrite'."
+    );
+  }
+
   const content = input.content;
 
   if (typeof content !== "string") {
@@ -431,12 +740,50 @@ export async function writeTextFileService(
     );
   }
 
-  const resolved = await resolveWritePathWithinRoot(
-    workspaceConfig,
-    input.rootId,
-    input.path,
-    isCreate
-  );
+  let resolved: ResolvedWritePathResult;
+
+  if (isCreate && createParents) {
+    const root = resolveRoot(workspaceConfig, input.rootId);
+    const parentDir = await ensureParentDirectories(root, input.path);
+    const fileName = path.basename(input.path.trim());
+    if (!fileName || fileName === "." || fileName === "..") {
+      throw new WorkspaceSecurityError("invalid_path", `Invalid filename for: "${input.path}".`);
+    }
+    const targetPath = path.join(parentDir, fileName);
+    if (!isContainedWithinRoot(root.realPath, targetPath)) {
+      throw new WorkspaceSecurityError(
+        "access_denied",
+        `Access denied: Path "${input.path}" escapes root boundary "${root.name}".`
+      );
+    }
+    let targetLstat: Stats | undefined;
+    try {
+      targetLstat = await fs.lstat(targetPath);
+    } catch {
+      targetLstat = undefined;
+    }
+    if (targetLstat) {
+      throw new WorkspaceSecurityError(
+        "already_exists",
+        `File already exists: "${input.path}" within root "${root.name}".`
+      );
+    }
+    const relFromRoot = path.relative(root.realPath, targetPath) || fileName;
+    resolved = {
+      targetPath,
+      relativeToRoot: relFromRoot,
+      root,
+      exists: false,
+    };
+  } else {
+    resolved = await resolveWritePathWithinRoot(
+      workspaceConfig,
+      input.rootId,
+      input.path,
+      isCreate,
+      createParents
+    );
+  }
 
   let previousSha256: string | undefined;
   let fileMode = 0o644;
