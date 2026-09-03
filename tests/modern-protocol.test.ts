@@ -722,17 +722,9 @@ test("Modern MCP Protocol — Native Progress Normalization & Coverage (Search &
 
 test("MCP Protocol — tools/list schema and execution for search_text contextLines and list_directory maxDepth", async () => {
   const fixture = createModernWorkspaceFixture();
-  const wsConfig = {
-    roots: [
-      {
-        id: "root-1",
-        name: "modern-root",
-        path: fixture.tempDir,
-        realPath: fixture.tempDir,
-      },
-    ],
-  };
-  const serverInstance = await createHttpTransportServer(0, "all", wsConfig);
+  const workspaceConfig = await resolveWorkspaceConfig([fixture.tempDir]);
+  const rootId = workspaceConfig.roots[0]!.id;
+  const serverInstance = await createHttpTransportServer(0, "all", workspaceConfig);
 
   const client = new Client(
     { name: "test-client-m1", version: "1.0.0" },
@@ -763,7 +755,7 @@ test("MCP Protocol — tools/list schema and execution for search_text contextLi
     const searchRes = await client.callTool({
       name: "search_text",
       arguments: {
-        rootId: "root-1",
+        rootId,
         query: "alpha77",
         contextLines: 1,
       },
@@ -779,7 +771,7 @@ test("MCP Protocol — tools/list schema and execution for search_text contextLi
     const listRes = await client.callTool({
       name: "list_directory",
       arguments: {
-        rootId: "root-1",
+        rootId,
         path: ".",
         maxDepth: 2,
       },
@@ -794,7 +786,7 @@ test("MCP Protocol — tools/list schema and execution for search_text contextLi
     const invalidSearchRes = await client.callTool({
       name: "search_text",
       arguments: {
-        rootId: "root-1",
+        rootId,
         query: "alpha77",
         contextLines: 15,
       },
@@ -805,7 +797,7 @@ test("MCP Protocol — tools/list schema and execution for search_text contextLi
     const invalidListRes = await client.callTool({
       name: "list_directory",
       arguments: {
-        rootId: "root-1",
+        rootId,
         path: ".",
         maxDepth: 10,
       },
