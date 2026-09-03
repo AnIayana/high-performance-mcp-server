@@ -82,6 +82,7 @@ export interface SearchTextOptions {
   readonly maxResults?: number;
   readonly maxFiles?: number;
   readonly timeoutMs?: number;
+  readonly contextLines?: number;
   readonly signal?: AbortSignal;
   readonly onProgress?: (scannedCount: number) => Promise<void> | void;
   readonly now?: () => number;
@@ -92,6 +93,8 @@ export interface SearchTextMatch {
   readonly line: number;
   readonly column: number;
   readonly preview: string;
+  readonly contextBefore?: readonly string[];
+  readonly contextAfter?: readonly string[];
 }
 
 export interface SearchTextResult {
@@ -139,6 +142,17 @@ export function normalizeExtensions(rawExtensions?: readonly string[]): string[]
  */
 function toPosixPath(relPath: string): string {
   return relPath.split(path.sep).join("/");
+}
+
+/**
+ * Formats a single context line with carriage-return stripping and MAX_PREVIEW_LENGTH (300) truncation.
+ */
+export function formatContextLine(line: string): string {
+  const cleanLine = line.replace(/\r$/, "");
+  if (cleanLine.length <= MAX_PREVIEW_LENGTH) {
+    return cleanLine;
+  }
+  return cleanLine.slice(0, MAX_PREVIEW_LENGTH) + "...";
 }
 
 /**
@@ -418,6 +432,10 @@ export async function searchTextService(
     100,
     Math.min(MAX_SEARCH_TIMEOUT_MS, options.timeoutMs ?? DEFAULT_SEARCH_TIMEOUT_MS)
   );
+  const effectiveContextLines =
+    typeof options.contextLines === "number" && Number.isSafeInteger(options.contextLines)
+      ? Math.max(0, Math.min(10, options.contextLines))
+      : 0;
 
   const normalizedQuery = caseSensitive ? query : query.toLowerCase();
 
@@ -467,6 +485,10 @@ export async function searchTextService(
       if (options.signal?.aborted) {
         throw new DOMException("Search operation was aborted", "AbortError");
       }
+      if (clock() - startTime >= effectiveTimeoutMs) {
+        stopReason = "timeout";
+        break;
+      }
 
       const isDir = dirent.isDirectory();
       const isFile = dirent.isFile();
@@ -480,20 +502,21 @@ export async function searchTextService(
         continue;
       }
 
-      if (isFile && !isSymlink) {
-        // Check extension filter
-        if (normalizedExtensions && normalizedExtensions.length > 0) {
+      // Check extension filter on candidate files
+      if (isFile) {
+        if (normalizedExtensions) {
           const lowerName = dirent.name.toLowerCase();
           const matchesExt = normalizedExtensions.some((ext) => lowerName.endsWith(ext));
-          if (!matchesExt) {
-            continue;
-          }
+          if (!matchesExt) continue;
         }
+
         candidateFiles.push({
           absPath: path.join(current.absDir, dirent.name),
           relPath: entryRelPath,
         });
-      } else if (isDir && !isSymlink && current.depth < MAX_SEARCH_DEPTH) {
+      }
+
+      if (isDir && !isSymlink && current.depth < MAX_SEARCH_DEPTH) {
         dirQueue.push({
           absDir: path.join(current.absDir, dirent.name),
           relDir: entryRelPath,
@@ -583,12 +606,21 @@ export async function searchTextService(
           fileHadMatch = true;
           const preview = formatLinePreview(rawLine, matchIdx, query.length);
 
-          results.push({
+          const matchObj: SearchTextMatch = {
             path: file.relPath,
             line: lineIdx + 1,
             column: matchIdx + 1,
             preview,
-          });
+          };
+
+          if (effectiveContextLines > 0) {
+            const beforeLines = lines.slice(Math.max(0, lineIdx - effectiveContextLines), lineIdx);
+            const afterLines = lines.slice(lineIdx + 1, Math.min(lines.length, lineIdx + 1 + effectiveContextLines));
+            (matchObj as { contextBefore?: readonly string[]; contextAfter?: readonly string[] }).contextBefore = beforeLines.map(formatContextLine);
+            (matchObj as { contextBefore?: readonly string[]; contextAfter?: readonly string[] }).contextAfter = afterLines.map(formatContextLine);
+          }
+
+          results.push(matchObj);
 
           if (results.length >= effectiveMaxResults) {
             stopReason = "max_results";

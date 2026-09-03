@@ -27,6 +27,14 @@ export default function registerListDirectoryTool(
           .optional()
           .default(".")
           .describe("Relative directory path within the root (default: '.')"),
+        maxDepth: z
+          .number()
+          .int()
+          .min(1)
+          .max(5)
+          .optional()
+          .default(1)
+          .describe("Maximum recursive subdirectory depth to list (1..5, default: 1)"),
       }),
       outputSchema: z.object({
         rootId: z.string(),
@@ -37,6 +45,7 @@ export default function registerListDirectoryTool(
           z.object({
             name: z.string(),
             type: z.enum(["file", "directory", "symlink", "other"]),
+            relativePath: z.string().optional(),
           })
         ),
       }),
@@ -46,7 +55,8 @@ export default function registerListDirectoryTool(
         const result = await listDirectoryService(
           context?.workspace,
           args.rootId,
-          args.path ?? "."
+          args.path ?? ".",
+          args.maxDepth ?? 1
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

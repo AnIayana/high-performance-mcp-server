@@ -80,6 +80,14 @@ export default function registerSearchTextTool(
           .optional()
           .default(DEFAULT_SEARCH_TIMEOUT_MS)
           .describe(`Maximum search duration in milliseconds (100..${MAX_SEARCH_TIMEOUT_MS}, default: ${DEFAULT_SEARCH_TIMEOUT_MS})`),
+        contextLines: z
+          .number()
+          .int()
+          .min(0)
+          .max(10)
+          .optional()
+          .default(0)
+          .describe("Number of surrounding context lines to include before and after each match (0..10, default: 0)"),
       }),
       outputSchema: z.object({
         rootId: z.string(),
@@ -93,6 +101,8 @@ export default function registerSearchTextTool(
             line: z.number(),
             column: z.number(),
             preview: z.string(),
+            contextBefore: z.array(z.string()).optional(),
+            contextAfter: z.array(z.string()).optional(),
           })
         ),
         scannedFiles: z.number(),
@@ -148,6 +158,7 @@ export default function registerSearchTextTool(
             maxResults: args.maxResults,
             maxFiles: args.maxFiles,
             timeoutMs: args.timeoutMs,
+            contextLines: args.contextLines,
             signal,
             onProgress,
           }

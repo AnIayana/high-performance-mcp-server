@@ -1,16 +1,19 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import type { WorkspaceConfig } from "../config/workspace.js";
 import {
   DEFAULT_TEXT_READ_BYTES,
   MAX_DIRECTORY_ENTRIES,
   MAX_TEXT_READ_BYTES,
+  isContainedWithinRoot,
   resolveExistingPathWithinRoot,
 } from "./path-security.js";
 
 export interface DirectoryEntryItem {
   name: string;
   type: "file" | "directory" | "symlink" | "other";
+  relativePath?: string;
 }
 
 export interface ListDirectoryResult {
@@ -43,12 +46,13 @@ export interface ReadTextFileResult {
 }
 
 /**
- * Lists directory entries within an allowed workspace root with deterministic sorting and 500 entry limit.
+ * Lists directory entries within an allowed workspace root with deterministic sorting, optional recursion, and 500 entry limit.
  */
 export async function listDirectoryService(
   workspaceConfig: WorkspaceConfig | undefined,
   rootId: string,
-  relativePath: string = "."
+  relativePath: string = ".",
+  maxDepth: number = 1
 ): Promise<ListDirectoryResult> {
   const resolved = await resolveExistingPathWithinRoot(workspaceConfig, rootId, relativePath);
 
@@ -56,31 +60,156 @@ export async function listDirectoryService(
     throw new Error(`Target is not a directory: "${relativePath}" within root "${resolved.root.name}".`);
   }
 
-  const dirEntries = await fs.readdir(resolved.resolvedPath, { withFileTypes: true });
+  const effectiveMaxDepth =
+    typeof maxDepth === "number" && Number.isSafeInteger(maxDepth)
+      ? Math.max(1, Math.min(5, maxDepth))
+      : 1;
 
-  const mappedEntries: DirectoryEntryItem[] = dirEntries.map((entry) => ({
-    name: entry.name,
-    type: entry.isDirectory()
-      ? "directory"
-      : entry.isFile()
-        ? "file"
-        : entry.isSymbolicLink()
-          ? "symlink"
-          : "other",
-  }));
+  if (effectiveMaxDepth === 1) {
+    const dirEntries = await fs.readdir(resolved.resolvedPath, { withFileTypes: true });
 
-  // Sort: directories first, then files, then other, then alphabetical
-  mappedEntries.sort((a, b) => {
-    if (a.type === "directory" && b.type !== "directory") return -1;
-    if (a.type !== "directory" && b.type === "directory") return 1;
-    if (a.type === "file" && b.type !== "file") return -1;
-    if (a.type !== "file" && b.type === "file") return 1;
-    return a.name.localeCompare(b.name);
-  });
+    const mappedEntries: DirectoryEntryItem[] = dirEntries.map((entry) => ({
+      name: entry.name,
+      type: entry.isDirectory()
+        ? "directory"
+        : entry.isFile()
+          ? "file"
+          : entry.isSymbolicLink()
+            ? "symlink"
+            : "other",
+    }));
 
-  const totalEntries = mappedEntries.length;
-  const truncated = totalEntries > MAX_DIRECTORY_ENTRIES;
-  const entries = truncated ? mappedEntries.slice(0, MAX_DIRECTORY_ENTRIES) : mappedEntries;
+    // Sort: directories first, then files, then other, then alphabetical
+    mappedEntries.sort((a, b) => {
+      if (a.type === "directory" && b.type !== "directory") return -1;
+      if (a.type !== "directory" && b.type === "directory") return 1;
+      if (a.type === "file" && b.type !== "file") return -1;
+      if (a.type !== "file" && b.type === "file") return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    const totalEntries = mappedEntries.length;
+    const truncated = totalEntries > MAX_DIRECTORY_ENTRIES;
+    const entries = truncated ? mappedEntries.slice(0, MAX_DIRECTORY_ENTRIES) : mappedEntries;
+
+    return {
+      rootId: resolved.root.id,
+      path: resolved.relativeToRoot,
+      entries,
+      totalEntries,
+      truncated,
+    };
+  }
+
+  // Recursive BFS traversal for maxDepth > 1
+  const allEntries: DirectoryEntryItem[] = [];
+  interface QueueItem {
+    absDir: string;
+    relFromQuery: string;
+    depth: number;
+  }
+
+  const queue: QueueItem[] = [
+    {
+      absDir: resolved.resolvedPath,
+      relFromQuery: "",
+      depth: 0,
+    },
+  ];
+
+  let hitTruncation = false;
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+
+    let dirEntries: import("node:fs").Dirent[];
+    try {
+      dirEntries = await fs.readdir(current.absDir, { withFileTypes: true });
+    } catch {
+      // If unable to read directory (e.g. permissions or vanished mid-traversal), continue gracefully
+      continue;
+    }
+
+    const currentLevelEntries: Array<{
+      item: DirectoryEntryItem;
+      dirent: import("node:fs").Dirent;
+      relPath: string;
+      absPath: string;
+    }> = [];
+
+    for (const entry of dirEntries) {
+      const isDir = entry.isDirectory();
+      const isFile = entry.isFile();
+      const isSymlink = entry.isSymbolicLink();
+      const entryType: "file" | "directory" | "symlink" | "other" = isDir
+        ? "directory"
+        : isFile
+          ? "file"
+          : isSymlink
+            ? "symlink"
+            : "other";
+
+      const relPath = current.relFromQuery
+        ? `${current.relFromQuery}/${entry.name}`
+        : entry.name;
+
+      currentLevelEntries.push({
+        item: {
+          name: entry.name,
+          type: entryType,
+          relativePath: relPath,
+        },
+        dirent: entry,
+        relPath,
+        absPath: path.join(current.absDir, entry.name),
+      });
+    }
+
+    // Sort using the exact same comparator: directories first, then files, then other, then alphabetical
+    currentLevelEntries.sort((a, b) => {
+      if (a.item.type === "directory" && b.item.type !== "directory") return -1;
+      if (a.item.type !== "directory" && b.item.type === "directory") return 1;
+      if (a.item.type === "file" && b.item.type !== "file") return -1;
+      if (a.item.type !== "file" && b.item.type === "file") return 1;
+      return a.item.name.localeCompare(b.item.name);
+    });
+
+    for (const entry of currentLevelEntries) {
+      if (allEntries.length >= MAX_DIRECTORY_ENTRIES) {
+        hitTruncation = true;
+        break;
+      }
+      allEntries.push(entry.item);
+
+      // Recurse into directories if depth allows (DO NOT follow symlinks)
+      if (
+        entry.item.type === "directory" &&
+        !entry.dirent.isSymbolicLink() &&
+        current.depth + 1 < effectiveMaxDepth
+      ) {
+        try {
+          const realSubDir = await fs.realpath(entry.absPath);
+          if (isContainedWithinRoot(resolved.root.realPath, realSubDir)) {
+            queue.push({
+              absDir: entry.absPath,
+              relFromQuery: entry.relPath,
+              depth: current.depth + 1,
+            });
+          }
+        } catch {
+          // Skip if resolving realpath fails
+        }
+      }
+    }
+
+    if (hitTruncation) {
+      break;
+    }
+  }
+
+  const totalEntries = allEntries.length;
+  const truncated = hitTruncation || totalEntries > MAX_DIRECTORY_ENTRIES;
+  const entries = allEntries.slice(0, MAX_DIRECTORY_ENTRIES);
 
   return {
     rootId: resolved.root.id,
