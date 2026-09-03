@@ -277,3 +277,132 @@ test("Workspace confirmation — safe complete target display, no silent truncat
   assert.ok(createWorkspaceWriteConfirmationMessage({ operation: "edit", path: longPath }).includes(longPath));
   assert.throws(() => createWorkspaceWriteConfirmationMessage({ operation: "edit", path: "a".repeat(4097) }), /too long/);
 });
+
+test("Workspace confirmation — createParents=true approve creates parents and file", async (t) => {
+  let prompts = 0;
+  let elicitedMessage = "";
+  const setup = await fixture(t, {
+    confirmation: true,
+    onElicit: (req) => {
+      prompts++;
+      elicitedMessage = (req as any).params?.message ?? "";
+      return { action: "accept", content: { confirm: true } };
+    },
+  });
+
+  const result = await setup.client.callTool({
+    name: "write_text_file",
+    arguments: {
+      mode: "create",
+      path: "nested/sub/dir/new.txt",
+      content: "Confirmed nested content",
+      createParents: true,
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(prompts, 1);
+  assert.ok(elicitedMessage.includes("may create missing parent directories"));
+  assert.ok(!elicitedMessage.includes(setup.rootDir));
+  assert.ok(!elicitedMessage.includes("Confirmed nested content"));
+
+  const onDisk = await fs.readFile(path.join(setup.rootDir, "nested", "sub", "dir", "new.txt"), "utf8");
+  assert.equal(onDisk, "Confirmed nested content");
+});
+
+test("Workspace confirmation — createParents=true decline causes zero mutation", async (t) => {
+  let prompts = 0;
+  const setup = await fixture(t, {
+    confirmation: true,
+    onElicit: () => {
+      prompts++;
+      return { action: "decline" };
+    },
+  });
+
+  const result = await setup.client.callTool({
+    name: "write_text_file",
+    arguments: {
+      mode: "create",
+      path: "decline_nested/sub/new.txt",
+      content: "Declined content",
+      createParents: true,
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(prompts, 1);
+  const entries = await fs.readdir(setup.rootDir);
+  assert.deepEqual(entries, ["existing.txt"]);
+});
+
+test("Workspace confirmation — createParents=true cancel causes zero mutation", async (t) => {
+  let prompts = 0;
+  const setup = await fixture(t, {
+    confirmation: true,
+    onElicit: () => {
+      prompts++;
+      return { action: "cancel" };
+    },
+  });
+
+  const result = await setup.client.callTool({
+    name: "write_text_file",
+    arguments: {
+      mode: "create",
+      path: "cancel_nested/sub/new.txt",
+      content: "Cancelled content",
+      createParents: true,
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(prompts, 1);
+  const entries = await fs.readdir(setup.rootDir);
+  assert.deepEqual(entries, ["existing.txt"]);
+});
+
+test("Workspace confirmation — createParents=true malformed elicitation response causes zero mutation", async (t) => {
+  let prompts = 0;
+  const setup = await fixture(t, {
+    confirmation: true,
+    onElicit: () => {
+      prompts++;
+      return { action: "accept", content: { confirm: false } } as any;
+    },
+  });
+
+  const result = await setup.client.callTool({
+    name: "write_text_file",
+    arguments: {
+      mode: "create",
+      path: "malformed_nested/sub/new.txt",
+      content: "Malformed content",
+      createParents: true,
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(prompts, 1);
+  const entries = await fs.readdir(setup.rootDir);
+  assert.deepEqual(entries, ["existing.txt"]);
+});
+
+test("Workspace confirmation — createParents message formatting and privacy", () => {
+  const msgWithout = createWorkspaceWriteConfirmationMessage({
+    operation: "create",
+    rootId: "root-1",
+    path: "dir/test.txt",
+  });
+  assert.ok(!msgWithout.includes("may create missing parent directories"));
+
+  const msgWith = createWorkspaceWriteConfirmationMessage({
+    operation: "create",
+    rootId: "root-1",
+    path: "dir/test.txt",
+    createParents: true,
+  });
+  assert.ok(msgWith.includes("may create missing parent directories"));
+  assert.ok(msgWith.includes('rootId="root-1"'));
+  assert.ok(msgWith.includes('path="dir/test.txt"'));
+});

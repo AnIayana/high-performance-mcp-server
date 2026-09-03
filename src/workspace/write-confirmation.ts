@@ -19,6 +19,7 @@ export interface WorkspaceWriteConfirmationInput {
   rootId?: string;
   path: string;
   approvalKeyMaterial: unknown;
+  createParents?: boolean;
 }
 
 function quoteBounded(value: string): string {
@@ -52,11 +53,12 @@ function createConfirmationKey(input: WorkspaceWriteConfirmationInput): string {
  * never its absolute host path. Content and hashes are deliberately excluded.
  */
 export function createWorkspaceWriteConfirmationMessage(
-  input: Pick<WorkspaceWriteConfirmationInput, "operation" | "rootId" | "path">
+  input: Pick<WorkspaceWriteConfirmationInput, "operation" | "rootId" | "path" | "createParents">
 ): string {
   const root = input.rootId?.trim() || "default configured root";
+  const parentNotice = input.createParents ? " (may create missing parent directories)" : "";
   return [
-    `Approve workspace ${input.operation} operation?`,
+    `Approve workspace ${input.operation}${parentNotice} operation?`,
     `rootId=${quoteBounded(root)}`,
     `path=${quoteBounded(input.path)}`,
     "No file changes occur unless this request is approved.",

@@ -24,6 +24,10 @@ export const writeTextFileInputSchema = z.discriminatedUnion("mode", [
     path: z.string().min(1).describe("Relative file path within the root"),
     mode: z.literal("create").describe("Write mode: create a new file only (fails if file already exists)"),
     content: z.string().describe("UTF-8 text content to write"),
+    createParents: z
+      .boolean()
+      .optional()
+      .describe("If true, safely creates missing parent directories within the workspace root"),
   }),
   z.strictObject({
     rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
@@ -58,21 +62,28 @@ export default function registerWriteTextFileTool(
     },
     withToolMetrics(toolMeta.name, async (args, mcpContext?: McpServerContext): Promise<CallToolResult | InputRequiredResult> => {
       try {
+        const createParents = args.mode === "create" ? args.createParents : undefined;
         if (context?.workspacePolicy?.requireWriteConfirmation) {
           const target = await resolveWritePathWithinRoot(
-            context.workspace, args.rootId, args.path, args.mode === "create"
+            context.workspace,
+            args.rootId,
+            args.path,
+            args.mode === "create",
+            createParents
           );
           const confirmationResult = requireWorkspaceWriteConfirmation(
             {
               operation: args.mode,
               rootId: target.root.id,
               path: target.relativeToRoot,
+              createParents,
               approvalKeyMaterial: {
                 tool: toolMeta.name,
                 rootId: args.rootId,
                 path: args.path,
                 mode: args.mode,
                 content: args.content,
+                createParents,
                 expectedSha256: args.mode === "overwrite" ? args.expectedSha256 : undefined,
               },
             },
@@ -88,6 +99,7 @@ export default function registerWriteTextFileTool(
           path: args.path,
           mode: args.mode,
           content: args.content,
+          createParents,
           expectedSha256: args.mode === "overwrite" ? args.expectedSha256 : undefined,
           operatorPolicy: context?.workspacePolicy,
         });
