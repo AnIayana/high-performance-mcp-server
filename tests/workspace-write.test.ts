@@ -1297,3 +1297,49 @@ test("write_text_file (create) — fs.link EPERM with existing target maps to al
   }
 });
 
+test("write_text_file (create) — Unexpected fs.link publication error is sanitized without leaking physical host paths", async () => {
+  const rootDir = await createTestDir("mcp-create-error-privacy");
+  const origLink = fs.link;
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+    const targetFile = path.join(rootDir, "privacy-test.txt");
+
+    (fs as any).link = async () => {
+      const err: any = new Error(
+        "EPROTO: publication failed, link 'C:\\secret\\user\\workspace\\.mcp-temp-12345.tmp' -> 'C:\\secret\\user\\workspace\\privacy-test.txt'"
+      );
+      err.code = "EPROTO";
+      err.path = "C:\\secret\\user\\workspace\\.mcp-temp-12345.tmp";
+      err.dest = "C:\\secret\\user\\workspace\\privacy-test.txt";
+      throw err;
+    };
+
+    await assert.rejects(
+      async () => {
+        await writeTextFileService(config, {
+          path: "privacy-test.txt",
+          mode: "create",
+          content: "PRIVACY_CONTENT",
+        });
+      },
+      (err: any) => {
+        assert.equal(err.code, "workspace_error");
+        assert.equal(err.message, 'Failed to publish file "privacy-test.txt" due to a filesystem error.');
+        // Verify no physical host paths or temp filenames leak
+        assert.equal(err.message.includes("C:\\secret"), false);
+        assert.equal(err.message.includes(".mcp-temp"), false);
+        assert.equal(err.message.includes("EPROTO"), false);
+        return true;
+      }
+    );
+
+    // Target must not exist
+    await assert.rejects(async () => fs.lstat(targetFile), { code: "ENOENT" });
+    // Temp files must be cleaned up
+    const dirEntries = await fs.readdir(rootDir);
+    assert.deepEqual(dirEntries, []);
+  } finally {
+    (fs as any).link = origLink;
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});

@@ -554,7 +554,7 @@ export async function writeTextFileService(
         }
         throw new WorkspaceSecurityError(
           "workspace_error",
-          `Failed to publish file "${input.path}": ${linkErr.message || String(linkErr)}`
+          `Failed to publish file "${input.path}" due to a filesystem error.`
         );
       }
     } else {
