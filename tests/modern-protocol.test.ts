@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -877,6 +878,297 @@ test("Modern MCP Protocol (2026-07-28) — fetch_url HEAD Method Schema and Prot
     assert.match(textContent, /Destination is not allowed|blocked|not allowed by network security policy/i);
   } finally {
     await client.close();
+    await serverInstance.close();
+  }
+});
+
+function makeHttpRequest(
+  options: http.RequestOptions,
+  bodyData?: string
+): Promise<{
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  body: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(options, (res) => {
+      let data = "";
+      res.setEncoding("utf-8");
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
+      res.on("end", () => {
+        resolve({
+          statusCode: res.statusCode ?? 0,
+          headers: res.headers,
+          body: data,
+        });
+      });
+    });
+    req.on("error", reject);
+    if (bodyData) {
+      req.write(bodyData);
+    }
+    req.end();
+  });
+}
+
+test("HTTP Transport — GET /healthz returns 200 with JSON status:ok and exact headers", async () => {
+  const serverInstance = await createHttpTransportServer(0, "safe");
+  try {
+    // 1. Clean GET /healthz
+    const res = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers["content-type"], "application/json; charset=utf-8");
+    assert.equal(res.headers["cache-control"], "no-store");
+    assert.equal(res.headers["content-length"], "15");
+    assert.equal(res.body, '{"status":"ok"}');
+
+    // 2. Query string variant: /healthz?probe=k8s
+    const queryRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz?probe=k8s",
+      method: "GET",
+    });
+
+    assert.equal(queryRes.statusCode, 200);
+    assert.equal(queryRes.headers["content-type"], "application/json; charset=utf-8");
+    assert.equal(queryRes.headers["cache-control"], "no-store");
+    assert.equal(queryRes.headers["content-length"], "15");
+    assert.equal(queryRes.body, '{"status":"ok"}');
+  } finally {
+    await serverInstance.close();
+  }
+});
+
+test("HTTP Transport — HEAD /healthz returns 200 with identical representation headers and empty body", async () => {
+  const serverInstance = await createHttpTransportServer(0, "safe");
+  try {
+    const res = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "HEAD",
+    });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers["content-type"], "application/json; charset=utf-8");
+    assert.equal(res.headers["cache-control"], "no-store");
+    assert.equal(res.headers["content-length"], "15");
+    assert.equal(res.body, "");
+    assert.equal(Buffer.byteLength(res.body), 0);
+  } finally {
+    await serverInstance.close();
+  }
+});
+
+test("HTTP Transport — Unsupported methods on /healthz return 405 Method Not Allowed", async () => {
+  const serverInstance = await createHttpTransportServer(0, "safe");
+  const unsupportedMethods = ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+  const expected405Body =
+    '{"error":"Method Not Allowed","message":"Only GET and HEAD methods are supported on /healthz"}';
+  const expected405Length = String(Buffer.byteLength(expected405Body));
+
+  try {
+    for (const method of unsupportedMethods) {
+      const res = await makeHttpRequest({
+        hostname: "127.0.0.1",
+        port: serverInstance.port,
+        path: "/healthz",
+        method,
+      });
+
+      assert.equal(res.statusCode, 405, `Method ${method} on /healthz must return 405`);
+      assert.equal(res.headers["allow"], "GET, HEAD", `Method ${method} must return Allow: GET, HEAD`);
+      assert.equal(res.headers["content-type"], "application/json; charset=utf-8");
+      assert.equal(res.headers["cache-control"], "no-store");
+      assert.equal(res.headers["content-length"], expected405Length);
+      assert.equal(res.body, expected405Body);
+    }
+  } finally {
+    await serverInstance.close();
+  }
+});
+
+test("HTTP Transport — Non-matching routes, trailing slashes, and /readyz return 404", async () => {
+  const serverInstance = await createHttpTransportServer(0, "safe");
+  const unknownPaths = [
+    "/healthz/",
+    "/healthz/?x=1",
+    "/HEALTHZ",
+    "/readyz",
+    "/readyz/",
+    "/",
+    "/arbitrary",
+  ];
+  const expected404Body = '{"error":"Not Found","message":"MCP server is hosted at /mcp"}';
+
+  try {
+    for (const p of unknownPaths) {
+      const res = await makeHttpRequest({
+        hostname: "127.0.0.1",
+        port: serverInstance.port,
+        path: p,
+        method: "GET",
+      });
+
+      assert.equal(res.statusCode, 404, `Path ${p} must return 404`);
+      assert.equal(res.headers["content-type"], "application/json");
+      assert.equal(res.body, expected404Body);
+    }
+  } finally {
+    await serverInstance.close();
+  }
+});
+
+test("HTTP Transport — /healthz enforces Host and Origin security guards", async () => {
+  const serverInstance = await createHttpTransportServer(0, "safe");
+  try {
+    // 1. Valid Host: 127.0.0.1:<port>
+    const validIpRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+      headers: {
+        host: `127.0.0.1:${serverInstance.port}`,
+      },
+    });
+    assert.equal(validIpRes.statusCode, 200);
+
+    // 2. Valid Host: localhost:<port>
+    const validLocalhostRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+      headers: {
+        host: `localhost:${serverInstance.port}`,
+      },
+    });
+    assert.equal(validLocalhostRes.statusCode, 200);
+
+    // 3. Invalid / untrusted Host (DNS rebinding attempt)
+    const invalidHostRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+      headers: {
+        host: `evil.attacker.com:${serverInstance.port}`,
+      },
+    });
+    assert.equal(invalidHostRes.statusCode, 403);
+    assert.ok(invalidHostRes.body.includes("-32000"));
+    assert.ok(invalidHostRes.body.includes("Invalid Host"));
+
+    // 4. Valid Origin: http://localhost:<port>
+    const validOriginRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+      headers: {
+        origin: `http://localhost:${serverInstance.port}`,
+      },
+    });
+    assert.equal(validOriginRes.statusCode, 200);
+
+    // 5. Untrusted external Origin
+    const invalidOriginRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+      headers: {
+        origin: "http://malicious.website.example.com",
+      },
+    });
+    assert.equal(invalidOriginRes.statusCode, 403);
+    assert.ok(invalidOriginRes.body.includes("-32000"));
+    assert.ok(invalidOriginRes.body.includes("Invalid Origin"));
+  } finally {
+    await serverInstance.close();
+  }
+});
+
+test("HTTP Transport — /healthz does not interfere with MCP sessions or tool execution", async () => {
+  const serverInstance = await createHttpTransportServer(0, "safe");
+  try {
+    // 1. Pre-connection health probes
+    for (let i = 0; i < 5; i++) {
+      const res = await makeHttpRequest({
+        hostname: "127.0.0.1",
+        port: serverInstance.port,
+        path: "/healthz",
+        method: "GET",
+      });
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.body, '{"status":"ok"}');
+    }
+
+    const headRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "HEAD",
+    });
+    assert.equal(headRes.statusCode, 200);
+    assert.equal(headRes.body, "");
+
+    // 2. Connect MCP client over Streamable HTTP transport
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+    );
+    const client = new Client(
+      {
+        name: "health-isolation-test-client",
+        version: "1.0.0",
+      },
+      {
+        versionNegotiation: {
+          mode: {
+            pin: "2026-07-28",
+          },
+        },
+      }
+    );
+
+    await client.connect(transport);
+
+    // 3. Interleaved tool execution
+    const pingRes = await client.callTool({
+      name: "ping",
+      arguments: {},
+    });
+    assert.equal(Boolean(pingRes.isError), false);
+
+    const echoRes = await client.callTool({
+      name: "echo",
+      arguments: { message: "isolation-check" },
+    });
+    assert.equal(Boolean(echoRes.isError), false);
+    assert.equal(getTextContent((echoRes.content as any)?.[0]), "Echo: isolation-check");
+
+    // 4. Post-execution health probe
+    const postHealthRes = await makeHttpRequest({
+      hostname: "127.0.0.1",
+      port: serverInstance.port,
+      path: "/healthz",
+      method: "GET",
+    });
+    assert.equal(postHealthRes.statusCode, 200);
+    assert.equal(postHealthRes.body, '{"status":"ok"}');
+
+    await client.close();
+  } finally {
     await serverInstance.close();
   }
 });

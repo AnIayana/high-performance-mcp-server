@@ -280,6 +280,99 @@ if (roots.length > 0) {
       throw err;
     }
     console.log(`[Smoke Test] TypeScript NodeNext compilation validated successfully.`);
+
+    // 12. Test installed binary in HTTP mode with /healthz probe
+    console.log(`[Smoke Test] Testing installed binary with --transport=http and /healthz probe...`);
+    const { spawn } = await import("node:child_process");
+    const net = await import("node:net");
+
+    const testPort = await new Promise<number>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const addr = srv.address();
+        if (addr && typeof addr === "object") {
+          const port = addr.port;
+          srv.close(() => resolve(port));
+        } else {
+          srv.close(() => reject(new Error("Could not acquire ephemeral port")));
+        }
+      });
+      srv.on("error", reject);
+    });
+
+    const cliScriptPath = path.join(tempDir, "node_modules", packageJson.name, "dist", "cli.js");
+    const httpChild = spawn(
+      process.execPath,
+      [cliScriptPath, "--transport=http", `--port=${testPort}`],
+      {
+        cwd: tempDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Timed out waiting for HTTP server to start"));
+        }, 10000);
+
+        httpChild.stderr.on("data", (chunk: Buffer) => {
+          const text = chunk.toString();
+          if (text.includes("[MCP HTTP] Listening on")) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+
+        httpChild.on("error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+
+        httpChild.on("exit", (code) => {
+          clearTimeout(timeout);
+          reject(new Error(`Server child exited prematurely with code ${code}`));
+        });
+      });
+
+      // Probe GET /healthz
+      const healthRes = await fetch(`http://127.0.0.1:${testPort}/healthz`);
+      assert.equal(healthRes.status, 200, "Packed CLI /healthz must return 200");
+      assert.equal(
+        healthRes.headers.get("content-type"),
+        "application/json; charset=utf-8",
+        "Packed CLI /healthz Content-Type must match"
+      );
+      assert.equal(
+        healthRes.headers.get("cache-control"),
+        "no-store",
+        "Packed CLI /healthz Cache-Control must match"
+      );
+      const healthBody = await healthRes.text();
+      assert.equal(healthBody, '{"status":"ok"}', "Packed CLI /healthz body must match");
+
+      // Probe /mcp route exists and is serviced by MCP handler
+      const mcpRes = await fetch(`http://127.0.0.1:${testPort}/mcp`);
+      assert.notEqual(mcpRes.status, 404, "Packed CLI /mcp must be handled by MCP handler");
+
+      // Probe /readyz returns 404
+      const readyRes = await fetch(`http://127.0.0.1:${testPort}/readyz`);
+      assert.equal(readyRes.status, 404, "Packed CLI /readyz must return 404");
+    } finally {
+      await new Promise<void>((resolve) => {
+        httpChild.on("exit", () => resolve());
+        httpChild.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            httpChild.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+          resolve();
+        }, 3000);
+      });
+    }
+    console.log(`[Smoke Test] Installed binary HTTP /healthz validated successfully.`);
   } finally {
     // 11. Cleanup
     try {
