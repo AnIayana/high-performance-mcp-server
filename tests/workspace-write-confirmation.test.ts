@@ -57,7 +57,7 @@ async function fixture(t: TestContext, options: {
   const clientTransport = options.transport === "stdio"
     ? new StdioClientTransport({
       command: process.execPath,
-      args: ["--import", "tsx", "src/index.ts", `--profile=${options.profile ?? "workspace_write"}`, `--root=${rootDir}`, "--workspace-max-write-bytes=128"],
+      args: ["--import", "tsx", "src/cli.ts", `--profile=${options.profile ?? "workspace_write"}`, `--root=${rootDir}`, "--workspace-max-write-bytes=128"],
       env: { MCP_WORKSPACE_WRITE_CONFIRMATION: String(options.confirmation ?? false) },
       stderr: "pipe",
     })
