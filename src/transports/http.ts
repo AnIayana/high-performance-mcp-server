@@ -14,6 +14,13 @@ import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
 import { createServer } from "../server.js";
 import { closeWorkerPool } from "../workers/pool.js";
 
+const HEALTH_BODY = '{"status":"ok"}';
+const HEALTH_CONTENT_LENGTH = Buffer.byteLength(HEALTH_BODY);
+
+const METHOD_NOT_ALLOWED_BODY =
+  '{"error":"Method Not Allowed","message":"Only GET and HEAD methods are supported on /healthz"}';
+const METHOD_NOT_ALLOWED_CONTENT_LENGTH = Buffer.byteLength(METHOD_NOT_ALLOWED_BODY);
+
 export interface HttpTransportServerInstance {
   readonly server: HttpServer;
   readonly port: number;
@@ -53,17 +60,50 @@ export async function createHttpTransportServer(
     if (!validateHost(req, res)) return;
     if (!validateOrigin(req, res)) return;
 
-    // 2. Strict endpoint path routing: only /mcp is serviced
+    // 2. Parse request URL
     const hostHeader = req.headers.host ?? `127.0.0.1:${assignedPort}`;
     const parsedUrl = new URL(req.url ?? "/", `http://${hostHeader}`);
 
+    // 3. Operational health endpoint: /healthz
+    if (parsedUrl.pathname === "/healthz") {
+      if (req.method === "GET") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Content-Length": HEALTH_CONTENT_LENGTH,
+        });
+        res.end(HEALTH_BODY);
+        return;
+      }
+
+      if (req.method === "HEAD") {
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Content-Length": HEALTH_CONTENT_LENGTH,
+        });
+        res.end();
+        return;
+      }
+
+      res.writeHead(405, {
+        "Allow": "GET, HEAD",
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Content-Length": METHOD_NOT_ALLOWED_CONTENT_LENGTH,
+      });
+      res.end(METHOD_NOT_ALLOWED_BODY);
+      return;
+    }
+
+    // 4. Strict endpoint path routing: only /mcp is serviced
     if (parsedUrl.pathname !== "/mcp") {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Not Found", message: "MCP server is hosted at /mcp" }));
       return;
     }
 
-    // 3. Delegate valid requests to MCP Node handler
+    // 5. Delegate valid requests to MCP Node handler
     void nodeHandler(req, res);
   });
 

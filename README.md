@@ -89,7 +89,35 @@ node dist/cli.js
 
 # Run workspace profile with allowlisted root
 node dist/cli.js --profile=workspace --root=.
+
+# Run with Streamable HTTP transport
+node dist/cli.js --transport=http --port=3000
 ```
+
+---
+
+## Streamable HTTP Transport & Health Endpoint
+
+The server can run over Streamable HTTP on loopback:
+
+```bash
+node dist/cli.js --transport=http --port=3000
+```
+
+When running with `--transport=http`:
+- **Protocol Endpoint**: `http://127.0.0.1:3000/mcp` (Streamable HTTP protocol handler)
+- **Health Endpoint**: `http://127.0.0.1:3000/healthz` (operational liveness probe)
+
+### Loopback Security & Health Contract
+
+- **Loopback-Only Binding**: The HTTP server binds exclusively to `127.0.0.1`. Remote binding, TLS termination, and external network exposures are not supported.
+- **Host & Origin Guards**: DNS-rebinding (`localhostHostValidation`) and browser CSRF (`localhostOriginValidation`) protections remain active across all routes, including `/healthz`.
+- **Supported Methods**:
+  - `GET /healthz`: Returns `200 OK` with `{"status":"ok"}` (`Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`).
+  - `HEAD /healthz`: Returns `200 OK` with identical headers and an empty body.
+  - Unsupported methods (`POST`, `PUT`, `DELETE`, etc.) return `405 Method Not Allowed` with `Allow: GET, HEAD`.
+- **Zero Side Effects**: Probing `/healthz` performs a constant-time local check. It creates no MCP sessions, incurs no worker thread allocations, touches no filesystem or network resources, and mutates no metrics.
+- **Orchestration / Supervisors**: For local container or process supervisors (e.g. Docker `HEALTHCHECK` or Kubernetes probes), operators may point both liveness and readiness probes to `/healthz` (example command: `curl -f -s http://127.0.0.1:3000/healthz`). There is no separate `/readyz` endpoint because all server initialization is synchronous and in-memory upon successful port listen.
 
 ---
 
