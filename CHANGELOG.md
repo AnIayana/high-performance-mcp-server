@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-07
+
+### Added
+
+- **Workspace Exploration (`search_text`)**: Added optional `contextLines` parameter (`0..10`, default `0`). When `contextLines > 0`, returns `contextBefore` and `contextAfter` bounded string arrays of lines surrounding matches. When omitted or `0`, legacy result shape is preserved without context fields.
+- **Recursive Directory Listing (`list_directory`)**: Added optional `maxDepth` parameter (`1..5`, default `1`). Traverses subdirectories breadth-first (BFS) returning a flat entry list. In recursive mode, entries expose a normalized `relativePath` with forward-slash separators, while preserving basename `name` and the global 500-entry truncation cap. Existing comparator sorting is preserved.
+- **Safe Parent Directory Creation (`write_text_file`)**: Added optional `createParents?: boolean` parameter for `mode: "create"` (omitted defaults to `false`). Safely creates missing parent directories segment-by-segment with canonical realpath boundary validation. Incompatible with `mode: "overwrite"`. When write confirmation is enabled, confirmation occurs strictly prior to filesystem mutation.
+- **Safe Network Metadata (`fetch_url`)**: Added optional `method?: "GET" | "HEAD"` parameter (omitted defaults to `"GET"`). Issuing `HEAD` preserves the identical URL, SSRF, DNS, IP pinning, and redirect security policies as `GET`, while bypassing representation body consumption (`bytesRead: 0`, `truncated: false`, `body: undefined`). Supports binary MIME type metadata retrieval. Retains `HEAD` across redirects (including 303). GET and HEAD conditional-cache identities are strictly isolated.
+
+### Changed & Hardened
+
+- **Intentional Create-Mode Hardening**: Create-mode file publication no longer falls back to an unsafe check-then-rename path when hard-link publication is unavailable. `fs.link` serves as the primary publication primitive; on filesystems where hard-link no-clobber publication is unavailable, create-mode writes now fail closed instead of using the previous check-then-rename fallback. Existing targets are never overwritten and unexpected native filesystem errors are sanitized.
+
+### Additive Options & Compatibility
+
+- **Additive Optional Inputs**: The new `contextLines`, `maxDepth`, `createParents`, and `fetch_url.method` inputs are optional. Existing callers that omit them retain their established default semantics (`search_text` omits context arrays, `list_directory` lists immediate children at depth 1, `write_text_file` requires existing parent directories, and `fetch_url` defaults to `GET`).
+- **Canonical Catalog & Zero Dependency Drift**: The public catalog remains exactly 20 tools, 8 profiles, 4 prompts, and 1 resource template, with zero new runtime dependencies.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added

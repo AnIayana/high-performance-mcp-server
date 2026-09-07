@@ -4,11 +4,13 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 
 ---
 
-## Project Status: Public Preview (v0.4.0)
+## Project Status: Public Preview (v0.5.0)
 
 > [!NOTE]
-> **Status**: `0.4.0` Public Preview.
+> **Status**: `0.5.0` Public Preview.
 > This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
+>
+> **Compatibility**: The new v0.5 options are additive. Existing callers that omit `contextLines`, `maxDepth`, `createParents`, and `fetch_url.method` retain their established default semantics. v0.5 also includes an intentional create-mode publication hardening: filesystems that cannot provide hard-link no-clobber publication now fail closed instead of using the previous check-then-rename fallback.
 
 ---
 
@@ -21,7 +23,10 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 - **MCP-Native Workspace Completions**: Autocompletes logical `rootId` values for every workspace prompt and the workspace resource template without enumerating files or exposing host paths.
 - **Safe-by-Default Tool Profiles**: Default `safe` profile exposes zero filesystem, network, or hardware inspection. Filesystem mutation and outbound network access require explicit `workspace_write`/`network` (or `all`) opt-in.
 - **Workspace Security & Host Path Privacy**: Secure allowlisted directory access with path traversal and symlink escape prevention, logical root mapping (`root-1`, `root-2`), bounded text operations, and binary file protection without exposing host absolute paths to clients or models. The `workspace` profile remains read-only; guarded mutation is isolated to `workspace_write` and `all`.
-- **Workspace Search v1**: Fast, bounded literal file and text search (`search_files`, `search_text`) with ignored directory defaults, bounded concurrency (`SEARCH_CONCURRENCY = 8`), coordinate mapping, and client cancellation.
+- **Workspace Search & Exploration**: Fast, bounded literal file and text search (`search_files`, `search_text`) with ignored directory defaults, bounded concurrency (`SEARCH_CONCURRENCY = 8`), coordinate mapping, optional bounded context lines (`contextLines: 0..10`), and client cancellation.
+- **Recursive Directory Listing**: Bounded recursive subdirectory traversal (`list_directory` with `maxDepth: 1..5`) using breadth-first search and normalized relative paths up to a global 500-entry cap.
+- **Guarded Workspace Mutation & Safe Parent Creation**: Transactional editing (`edit_text_file`) and atomic no-clobber creation (`write_text_file`) with optional safe segment-by-segment parent creation (`createParents`), optimistic SHA-256 concurrency control, and optional client confirmation.
+- **Safe Network Fetch & Metadata**: Outbound HTTP/HTTPS fetching (`fetch_url`) protected by multi-layered SSRF defenses, DNS rebinding mitigation, port allowlists, conditional response caching, and lightweight HTTP `HEAD` metadata inspection.
 - **Worker Thread Pool with Cancellation**: Offload CPU-heavy tasks from the Node.js event loop with automatic lifecycle recovery, `AbortSignal` cancellation support, and prompt hard termination for running synchronous compute.
 - **Normalized MCP Progress Reporting**: High-performance progress notifications across workspace search and compute worker tools with guaranteed in-order delivery and zero overhead when omitted.
 - **Production LRU Cache**: Memory-bounded cache with TTL support and single-flight request coalescing to eliminate cache stampedes.
@@ -168,6 +173,30 @@ npx high-performance-mcp-server --profile=workspace --root=./packages/core --roo
 - **Binary File Detection**: Files containing NUL bytes (`\0`) are rejected by `read_text_file` to prevent context pollution.
 - **MCP Resources**: Exposes the canonical `workspace:///{rootId}/{+path}` (`workspace_text_file`) template. Discover logical roots with `workspace_roots`; `resources/list` does not recursively enumerate files.
 
+### Inspecting Directories & Files
+
+The `workspace` profile provides bounded file and directory inspection tools:
+
+1. **`list_directory`**:
+   - Lists directory contents within an allowlisted workspace root up to a global 500-entry cap (`truncated: true` when exceeded).
+   - **Bounded Recursive Traversal**: Optional `maxDepth` parameter (`1..5`, default: `1`). When `maxDepth > 1`, directory trees are traversed breadth-first (BFS) up to the specified depth and returned as a flat list.
+   - **Relative Path Output**: In recursive mode, entries include a normalized `relativePath` with forward-slash separators (`/`), while `name` preserves the entry's basename.
+   - **Deterministic Sorting**: Existing comparator behavior is preserved across directory entries.
+
+   ```json
+   {
+     "name": "list_directory",
+     "arguments": {
+       "rootId": "root-1",
+       "path": "src",
+       "maxDepth": 2
+     }
+   }
+   ```
+
+2. **`file_info`**: Retrieves size, timestamps, and file type attributes for a relative path within an allowlisted root.
+3. **`read_text_file`**: Reads UTF-8 file contents up to the configured byte limit (default 256 KiB, max 1 MiB). Files containing NUL bytes are rejected.
+
 ### Searching the Workspace
 
 The `workspace` profile provides bounded, read-only search tools:
@@ -187,6 +216,19 @@ The `workspace` profile provides bounded, read-only search tools:
    - Limits: Hard defaults (`maxResults: 100` [max 500], `maxFiles: 5000` [max 50000], `timeoutMs: 10000` [max 30000]).
    - Fully cancellable via client `AbortSignal`.
    - Streams native MCP progress notifications (`notifications/progress`) when requested via `progressToken`. Zero progress overhead when unrequested.
+   - **Bounded Context Lines**: Optional `contextLines` parameter (`0..10`, default: `0`). When `contextLines > 0`, matching occurrences include `contextBefore` and `contextAfter` as bounded string arrays of surrounding lines. When omitted or `0`, context fields are omitted. Unbounded context is not supported.
+
+   ```json
+   {
+     "name": "search_text",
+     "arguments": {
+       "rootId": "root-1",
+       "query": "SEARCH_CONCURRENCY",
+       "path": "src",
+       "contextLines": 2
+     }
+   }
+   ```
 
 ---
 
@@ -205,7 +247,9 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
 > When running with `--profile=all` or `--profile=workspace_write`, connected clients and LLMs have guarded text write and edit capabilities within configured `--root` directories. The standard `--profile=workspace` remains strictly read-only.
 
 1. **`write_text_file`**:
-   - **Create Mode** (`mode: "create"`): Creates a new UTF-8 text file inside an allowlisted workspace root. Enforces atomic no-clobber semantics via `fs.link` (or equivalent no-clobber publishing); fails safely if the file already exists (`already_exists`) or if the parent directory does not exist (`missing_parent`). Providing `expectedSha256` in create mode is forbidden.
+   - **Create Mode** (`mode: "create"`): Creates a new UTF-8 text file inside an allowlisted workspace root. Enforces atomic no-clobber semantics via `fs.link`; fails safely if the file already exists (`already_exists`) or if the parent directory does not exist (`missing_parent`). Providing `expectedSha256` in create mode is forbidden.
+   - **Safe Parent Directory Creation**: Optional `createParents?: boolean` (default: false). When `true`, missing parent directories within the workspace root are created segment-by-segment with strict canonical realpath containment validation. Only valid for `mode: "create"` (specifying `createParents` in `mode: "overwrite"` is rejected as schema-invalid). When write confirmation is enabled, confirmation occurs strictly before any directory creation or filesystem mutation. If final file publication fails, created parent directories may remain as partial side effects. Final file publication retains atomic no-clobber hard-link semantics on supported filesystems; parent-directory creation itself is not fully atomic.
+   - **No-Clobber Fail-Closed Hardening**: Create-mode file publication no longer falls back to an unsafe check-then-rename path when hard-link publication is unavailable. `fs.link` is the create publication primitive; unsupported hard-link publication fails closed without overwriting existing files, and unexpected native filesystem errors are sanitized.
    - **Overwrite Mode** (`mode: "overwrite"`): Strictly requires `expectedSha256` (64-character lowercase hex) matching the file's current SHA-256 hash. If the file was modified concurrently, throws `content_conflict` and aborts without touching the target file.
    - **Exclusive Temp & Atomic Replacement**: Creates an exclusive temporary file (`.mcp-temp-<uuid>.tmp`) in the target directory (`O_CREAT | O_EXCL`), flushes to disk (`fsync`), re-validates the target file type and hash, and atomically replaces the destination.
 
@@ -214,10 +258,10 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
      "name": "write_text_file",
      "arguments": {
        "rootId": "root-1",
-       "path": "src/config.json",
-       "mode": "overwrite",
-       "content": "{\n  \"version\": 2\n}\n",
-       "expectedSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+       "path": "src/nested/components/Button.tsx",
+       "mode": "create",
+       "content": "export function Button() { return <button>Click</button>; }\n",
+       "createParents": true
      }
    }
    ```
@@ -255,9 +299,11 @@ Server operators can set strict hard caps on the maximum allowed write or edit p
 ### Metadata & Concurrency Considerations
 
 - **Atomic Replacement Metadata**: Atomic replacement creates a new filesystem entry, preserving POSIX permission bits (`0755`, `0644`) where supported. Other OS-specific metadata (e.g. inode number, creation timestamp `ctime`, ACL inheritance) may not be portably preserved.
-- **Residual Concurrency Boundaries**: Pre-replace revalidation minimizes TOCTOU race conditions against untrusted MCP callers. However, a hostile local OS process with equivalent filesystem privileges executing concurrent writes in the microseconds after final validation may still race path-based operations.
+- **Residual Concurrency Boundaries**: Pre-replace revalidation minimizes TOCTOU race conditions against untrusted MCP callers. However, a hostile local OS process with equivalent filesystem privileges executing concurrent writes in the microseconds after final validation may still race path-based operations. Equal-privilege local filesystem races remain a residual threat model.
+- **Path Indirection & Boundary Checks**: Path containment relies on canonical `fs.realpath` resolution within configured root boundaries.
+- **Fail-Closed Hard-Link Publication**: Where filesystems or operating environments do not support atomic `fs.link` hard-link publication, create-mode writes fail closed without clobbering existing files.
 
-### Optional Client-Mediated Write Confirmation (Unreleased)
+### Optional Client-Mediated Write Confirmation
 
 Confirmation is **off by default**. Enable it for both mutation tools with the operator-only `--workspace-write-confirmation` flag, or `MCP_WORKSPACE_WRITE_CONFIRMATION=true` (`true`/`1`/`false`/`0`). The CLI flag enables confirmation even if the environment says `false`; tool arguments cannot disable it. No tools are added and profile access stays unchanged.
 
@@ -329,15 +375,19 @@ npx high-performance-mcp-server --profile=network
 
 ### `fetch_url` Tool Details
 
-The `fetch_url` tool performs a strictly bounded, read-only HTTP/HTTPS GET request to public web resources.
+The `fetch_url` tool performs strictly bounded, read-only HTTP/HTTPS requests to public web resources.
+
+- **Supported Methods**: Optional `method` parameter accepts `"GET"` (default) or `"HEAD"`. Arbitrary HTTP verbs (`POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`) are rejected at the schema boundary.
+- **HEAD Metadata Support**: When `method: "HEAD"` is specified, the server issues a native HEAD request reusing the exact same SSRF, DNS multi-answer validation, socket pinning, and redirect policy as GET. Representation bodies are not consumed (`bytesRead: 0`, `truncated: false`, `body: undefined`). `Content-Length` is reported as server-declared representation length metadata, not downloaded bytes. Bypasses text-body decoding constraints, enabling metadata retrieval for binary assets (`image/png`, `application/pdf`, `application/octet-stream`) and compressed content (`Content-Encoding: gzip`).
+- **Redirect Method Preservation**: Retains the requested HTTP method (`GET` or `HEAD`) across all redirect hops (`301`, `302`, `303`, `307`, `308`). Specifically, `HEAD` with `303 See Other` remains `HEAD` at the destination.
+- **Conditional Cache Isolation**: GET and HEAD cache entries are strictly isolated using separate preimages; neither method can satisfy or pollute the other. Existing GET cache key identity is preserved (`network-fetch-v1\0<canonicalUrl>`). Conditional `304 Not Modified` revalidation on HEAD returns cached original status and statusText with omitted body and `revalidationStatus: 304`.
 
 ```json
 {
   "name": "fetch_url",
   "arguments": {
     "url": "https://raw.githubusercontent.com/modelcontextprotocol/specification/main/LICENSE",
-    "maxBytes": 1048576,
-    "timeoutMs": 10000
+    "method": "HEAD"
   }
 }
 ```
@@ -350,7 +400,7 @@ The `fetch_url` tool performs a strictly bounded, read-only HTTP/HTTPS GET reque
 - **Manual Redirect Re-validation**: Up to 5 redirects (`301`, `302`, `303`, `307`, `308`) are manually followed. Every intermediate target is re-validated against full URL, port, and IP security policies. HTTPS-to-HTTP downgrade redirects are rejected.
 - **Zero IP Disclosure**: Error messages returned to clients never leak internal IP addresses, local socket details, or DNS topologies.
 - **Bounded Resource Usage**: Streaming response reader buffers only up to requested `maxBytes` (default 1 MiB, hard maximum 5 MiB). If payload exceeds limit, `truncated: true` is returned and the stream is immediately destroyed.
-- **Strict Textual Decoding**: Decodes exclusively textual MIME types (`text/*`, `application/json`, `application/xml`, `application/javascript`, `application/xhtml+xml`, `application/yaml`) with fatal UTF-8 decoding (`new TextDecoder("utf-8", { fatal: true })`). Binary bodies and explicit non-UTF-8 encodings are rejected.
+- **Strict Textual Decoding (GET)**: For GET requests, decodes exclusively textual MIME types (`text/*`, `application/json`, `application/xml`, `application/javascript`, `application/xhtml+xml`, `application/yaml`) with fatal UTF-8 decoding (`new TextDecoder("utf-8", { fatal: true })`). Binary bodies and explicit non-UTF-8 encodings are rejected. HEAD requests bypass body decoding restrictions and allow metadata inspection of binary content types.
 ### Operator-Configurable Egress Policy
 
 Server operators can enforce additional deployment-level egress policies to restrict outbound network capabilities:
