@@ -19,6 +19,38 @@ export const toolMeta: ToolMetadata = {
     "Performs an SSRF-hardened, read-only HTTP/HTTPS GET request to public web resources with bounded UTF-8 text decoding",
 };
 
+export const fetchUrlInputSchema = z.object({
+  url: z
+    .string()
+    .min(1)
+    .max(MAX_URL_LENGTH)
+    .describe("The public HTTP or HTTPS URL to fetch (max 2048 characters)"),
+  method: z
+    .enum(["GET", "HEAD"])
+    .optional()
+    .describe("HTTP method to use (GET or HEAD, default: GET)"),
+  maxBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_FETCH_MAX_BYTES)
+    .optional()
+    .default(DEFAULT_FETCH_MAX_BYTES)
+    .describe(
+      `Maximum response bytes to read (1..${MAX_FETCH_MAX_BYTES}, default: ${DEFAULT_FETCH_MAX_BYTES})`
+    ),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .max(MAX_FETCH_TIMEOUT_MS)
+    .optional()
+    .default(DEFAULT_FETCH_TIMEOUT_MS)
+    .describe(
+      `Overall request timeout in milliseconds (1000..${MAX_FETCH_TIMEOUT_MS}, default: ${DEFAULT_FETCH_TIMEOUT_MS})`
+    ),
+});
+
 /**
  * Registers the 'fetch_url' tool on the provided MCP server instance.
  */
@@ -31,33 +63,7 @@ export default function registerFetchUrlTool(
     {
       title: "Fetch URL",
       description: toolMeta.description,
-      inputSchema: z.object({
-        url: z
-          .string()
-          .min(1)
-          .max(MAX_URL_LENGTH)
-          .describe("The public HTTP or HTTPS URL to fetch (max 2048 characters)"),
-        maxBytes: z
-          .number()
-          .int()
-          .min(1)
-          .max(MAX_FETCH_MAX_BYTES)
-          .optional()
-          .default(DEFAULT_FETCH_MAX_BYTES)
-          .describe(
-            `Maximum response bytes to read (1..${MAX_FETCH_MAX_BYTES}, default: ${DEFAULT_FETCH_MAX_BYTES})`
-          ),
-        timeoutMs: z
-          .number()
-          .int()
-          .min(1000)
-          .max(MAX_FETCH_TIMEOUT_MS)
-          .optional()
-          .default(DEFAULT_FETCH_TIMEOUT_MS)
-          .describe(
-            `Overall request timeout in milliseconds (1000..${MAX_FETCH_TIMEOUT_MS}, default: ${DEFAULT_FETCH_TIMEOUT_MS})`
-          ),
-      }),
+      inputSchema: fetchUrlInputSchema,
       outputSchema: z.object({
         requestedUrl: z.string(),
         finalUrl: z.string(),
@@ -84,6 +90,7 @@ export default function registerFetchUrlTool(
       const signal = extra?.signal;
       const result = await fetchUrlService({
         url: args.url,
+        method: args.method,
         maxBytes: args.maxBytes,
         timeoutMs: args.timeoutMs,
         signal,

@@ -136,6 +136,7 @@ export function trimIncompleteTrailingUtf8(buf: Buffer): Buffer {
  * 9. Optional conditional revalidation cache (ETag / Last-Modified) requiring full security pipeline on every reuse.
  */
 export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUrlResult> {
+  const method = options.method ?? "GET";
   const allowedPorts = options.customAllowedPorts ?? DEFAULT_ALLOWED_PORTS;
   const resolver: SafeDnsResolver = options.customResolver ?? new DefaultDnsResolver();
   const operatorPolicy = options.operatorPolicy;
@@ -189,12 +190,12 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
   let conditionalHeaders: Record<string, string> | undefined;
 
   if (networkCache?.enabled && currentUrl.protocol === "https:" && (!currentUrl.search || currentUrl.search.length === 0)) {
-    cacheKey = computeCacheKey(currentUrl);
+    cacheKey = computeCacheKey(currentUrl, method);
     if (cacheKey) {
       const candidate = networkCache.get(cacheKey);
       // Ensure candidate body fits within caller's effective maxBytes
       if (candidate) {
-        if (candidate.bodyBuffer.byteLength <= maxBytes) {
+        if (method === "HEAD" || candidate.bodyBuffer.byteLength <= maxBytes) {
           cachedEntry = candidate;
           if (cachedEntry.etag) {
             conditionalHeaders = { "If-None-Match": cachedEntry.etag };
@@ -220,6 +221,7 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
 
       const responseOrRedirect = await executeSingleRequest({
         targetUrl: currentUrl,
+        method,
         maxBytes,
         allowedPorts,
         resolver,
@@ -274,8 +276,8 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
       // Handle 304 Not Modified
       if (responseOrRedirect.status === 304 && cachedEntry && redirectCount === 0) {
         // Confirm cached body passes current maxBytes
-        if (cachedEntry.bodyBuffer.byteLength <= maxBytes) {
-          const cachedBody = cachedEntry.bodyBuffer.toString("utf-8");
+        if (method === "HEAD" || cachedEntry.bodyBuffer.byteLength <= maxBytes) {
+          const cachedBody = method === "HEAD" ? undefined : cachedEntry.bodyBuffer.toString("utf-8");
           return {
             requestedUrl,
             finalUrl: currentUrl.href,
@@ -284,7 +286,7 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
             contentType: cachedEntry.contentType,
             contentLength: cachedEntry.contentLength,
             body: cachedBody,
-            bytesRead: cachedEntry.bodyBuffer.byteLength,
+            bytesRead: method === "HEAD" ? 0 : cachedEntry.bodyBuffer.byteLength,
             truncated: false,
             redirectCount: 0,
             cacheStatus: "revalidated",
@@ -297,6 +299,7 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
       if (responseOrRedirect.status === 200) {
         const eligibility = checkResponseCacheEligibility({
           targetUrl: currentUrl,
+          method,
           redirectCount,
           status: 200,
           truncated: responseOrRedirect.truncated,
@@ -306,7 +309,7 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
         if (networkCache?.enabled) {
           if (eligibility.eligible && cacheKey) {
             const newEntry: CachedHttpResponse = {
-              bodyBuffer: responseOrRedirect.bodyBuffer,
+              bodyBuffer: method === "HEAD" ? Buffer.alloc(0) : responseOrRedirect.bodyBuffer,
               status: 200,
               statusText: responseOrRedirect.statusText,
               contentType: responseOrRedirect.contentType,
@@ -361,6 +364,7 @@ export async function fetchUrlService(options: FetchUrlOptions): Promise<FetchUr
 
 interface SingleRequestOptions {
   readonly targetUrl: URL;
+  readonly method?: "GET" | "HEAD";
   readonly maxBytes: number;
   readonly allowedPorts: readonly number[];
   readonly resolver: SafeDnsResolver;
@@ -386,6 +390,7 @@ type SingleRequestResult =
 
 async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleRequestResult> {
   const { targetUrl, maxBytes, resolver, signal, allowLoopbackForTesting = false } = opts;
+  const method = opts.method ?? "GET";
 
   return new Promise<SingleRequestResult>((resolve, reject) => {
     if (signal.aborted) {
@@ -427,7 +432,7 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
       hostname: targetUrl.hostname,
       port,
       path: `${targetUrl.pathname}${targetUrl.search}`,
-      method: "GET",
+      method,
       headers: requestHeaders,
       agent,
       lookup: customLookup as any,
@@ -498,7 +503,40 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
           );
         }
 
-        // Content-Encoding verification: reject any non-identity compression
+        // Parse optional Content-Length safely
+        let declaredContentLength: number | undefined;
+        const rawCL = res.headers["content-length"];
+        if (rawCL) {
+          const parsedCL = parseInt(Array.isArray(rawCL) ? rawCL[0]! : rawCL, 10);
+          if (!isNaN(parsedCL) && parsedCL >= 0 && Number.isSafeInteger(parsedCL)) {
+            declaredContentLength = parsedCL;
+          }
+        }
+
+        const rawContentType = res.headers["content-type"];
+        const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+
+        // For HEAD requests, representation body is neither transferred nor decoded.
+        // Return terminal metadata without body consumption or text-body validation.
+        if (method === "HEAD") {
+          res.resume();
+          signal.removeEventListener("abort", abortHandler);
+          cleanup();
+          return resolve({
+            isRedirect: false,
+            status,
+            statusText,
+            contentType: contentTypeHeader,
+            contentLength: declaredContentLength,
+            body: undefined,
+            bodyBuffer: Buffer.alloc(0),
+            bytesRead: 0,
+            truncated: false,
+            rawHeaders: res.headers,
+          });
+        }
+
+        // Content-Encoding verification: reject any non-identity compression (GET only)
         const contentEncoding = res.headers["content-encoding"];
         if (contentEncoding && contentEncoding.toLowerCase() !== "identity") {
           res.destroy();
@@ -513,8 +551,6 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
         }
 
         // Content-Type & Charset inspection
-        const rawContentType = res.headers["content-type"];
-        const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
         const inspectedContentType = parseContentTypeHeader(contentTypeHeader);
 
         // Check empty body responses (e.g. 204 No Content, 304 Not Modified)
@@ -564,16 +600,6 @@ async function executeSingleRequest(opts: SingleRequestOptions): Promise<SingleR
                 `Unsupported charset "${inspectedContentType.charset}". Only UTF-8 is supported.`
               )
             );
-          }
-        }
-
-        // Parse optional Content-Length safely
-        let declaredContentLength: number | undefined;
-        const rawCL = res.headers["content-length"];
-        if (rawCL) {
-          const parsedCL = parseInt(Array.isArray(rawCL) ? rawCL[0]! : rawCL, 10);
-          if (!isNaN(parsedCL) && parsedCL >= 0 && Number.isSafeInteger(parsedCL)) {
-            declaredContentLength = parsedCL;
           }
         }
 

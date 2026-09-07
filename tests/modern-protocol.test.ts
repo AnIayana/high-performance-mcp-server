@@ -810,4 +810,73 @@ test("MCP Protocol — tools/list schema and execution for search_text contextLi
   }
 });
 
+test("Modern MCP Protocol (2026-07-28) — fetch_url HEAD Method Schema and Protocol Boundary Contracts", async () => {
+  const serverInstance = await createHttpTransportServer(0, "network");
+  const transport = new StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${serverInstance.port}/mcp`)
+  );
 
+  const client = new Client(
+    {
+      name: "integration-test-client-fetch-head",
+      version: "0.0.0",
+    },
+    {
+      versionNegotiation: {
+        mode: {
+          pin: "2026-07-28",
+        },
+      },
+    }
+  );
+
+  try {
+    await client.connect(transport);
+
+    // 1. Verify tools/list shows fetch_url with optional enum: ["GET", "HEAD"]
+    const toolsList = await client.listTools();
+    const fetchUrlTool = toolsList.tools.find((t) => t.name === "fetch_url");
+    assert.ok(fetchUrlTool, "fetch_url tool must be registered in network profile");
+
+    const methodSchema = (fetchUrlTool.inputSchema as any)?.properties?.method;
+    assert.ok(methodSchema, "fetch_url inputSchema must declare method property");
+    assert.deepEqual(methodSchema.enum, ["GET", "HEAD"], "method enum must strictly be GET and HEAD");
+
+    // 2. Schema rejection at protocol boundary: Invalid method=POST
+    const postRes = await client.callTool({
+      name: "fetch_url",
+      arguments: {
+        url: "https://example.com/test",
+        method: "POST",
+      },
+    });
+    assert.ok(postRes.isError, "method=POST must be rejected at schema/protocol boundary");
+
+    // 3. Schema rejection at protocol boundary: Invalid lowercase method=head
+    const lowerRes = await client.callTool({
+      name: "fetch_url",
+      arguments: {
+        url: "https://example.com/test",
+        method: "head",
+      },
+    });
+    assert.ok(lowerRes.isError, "method=head (lowercase) must be rejected at schema/protocol boundary");
+
+    // 4. Verification that method=HEAD passes schema validation and triggers network execution
+    const headRes = await client.callTool({
+      name: "fetch_url",
+      arguments: {
+        url: "http://127.0.0.1:8080/test",
+        method: "HEAD",
+      },
+    });
+    // The request passed Zod schema validation and entered fetchUrlService, where SSRF policy
+    // safely rejected the loopback destination at runtime.
+    assert.ok(headRes.isError, "Loopback request must be rejected by runtime SSRF policy");
+    const textContent = (headRes.content as any)?.[0]?.text ?? "";
+    assert.match(textContent, /Destination is not allowed|blocked|not allowed by network security policy/i);
+  } finally {
+    await client.close();
+    await serverInstance.close();
+  }
+});

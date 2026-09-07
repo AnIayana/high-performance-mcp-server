@@ -169,7 +169,7 @@ export function sanitizeLastModified(rawLastModified?: string): string | undefin
  * Computes an opaque SHA-256 cache key from a canonical HTTPS URL.
  * Discards fragments and verifies absence of query parameters.
  */
-export function computeCacheKey(targetUrl: URL): string | null {
+export function computeCacheKey(targetUrl: URL, method: "GET" | "HEAD" = "GET"): string | null {
   if (targetUrl.protocol !== "https:") {
     return null;
   }
@@ -183,7 +183,10 @@ export function computeCacheKey(targetUrl: URL): string | null {
   const pathname = targetUrl.pathname || "/";
   const canonicalUrl = `https://${hostname}${portPart}${pathname}`;
 
-  const preimage = `network-fetch-v1\0${canonicalUrl}`;
+  const preimage =
+    method === "HEAD"
+      ? `network-fetch-v1\0HEAD\0${canonicalUrl}`
+      : `network-fetch-v1\0${canonicalUrl}`;
   return createHash("sha256").update(preimage, "utf8").digest("hex");
 }
 
@@ -203,8 +206,9 @@ export function checkResponseCacheEligibility(params: {
   readonly status: number;
   readonly truncated: boolean;
   readonly headers: Record<string, string | string[] | undefined>;
+  readonly method?: "GET" | "HEAD";
 }): CacheEligibilityCheck {
-  const { targetUrl, redirectCount, status, truncated, headers } = params;
+  const { targetUrl, redirectCount, status, truncated, headers, method = "GET" } = params;
 
   // 1. Must be HTTPS
   if (targetUrl.protocol !== "https:") {
@@ -255,13 +259,15 @@ export function checkResponseCacheEligibility(params: {
     }
   }
 
-  // 9. Check Content-Encoding (only absent or identity)
-  const contentEncodingRaw = headers["content-encoding"];
-  const contentEncoding = Array.isArray(contentEncodingRaw)
-    ? contentEncodingRaw[0]
-    : contentEncodingRaw;
-  if (contentEncoding && contentEncoding.toLowerCase() !== "identity") {
-    return { eligible: false, reason: "compressed_content_encoding" };
+  // 9. Check Content-Encoding (for GET: only absent or identity; for HEAD: skip Content-Encoding check since no body is cached)
+  if (method === "GET") {
+    const contentEncodingRaw = headers["content-encoding"];
+    const contentEncoding = Array.isArray(contentEncodingRaw)
+      ? contentEncodingRaw[0]
+      : contentEncodingRaw;
+    if (contentEncoding && contentEncoding.toLowerCase() !== "identity") {
+      return { eligible: false, reason: "compressed_content_encoding" };
+    }
   }
 
   // 10. Must have valid sanitized ETag or Last-Modified validator

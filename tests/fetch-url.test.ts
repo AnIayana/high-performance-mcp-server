@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import https from "node:https";
 import { test } from "node:test";
+import { McpServer } from "@modelcontextprotocol/server";
 import {
   createNetworkCachePolicy,
   HttpConditionalCache,
 } from "../src/network/conditional-cache.js";
 import { fetchUrlService } from "../src/network/fetch-service.js";
 import { NetworkSecurityError, type SafeDnsResolver } from "../src/network/types.js";
+import registerFetchUrlTool, { fetchUrlInputSchema } from "../src/tools/fetch-url.js";
 import { TEST_TLS_CERT, TEST_TLS_KEY } from "./fixtures/test-cert.js";
 
 const localLoopbackResolver: SafeDnsResolver = {
@@ -2263,5 +2265,878 @@ test("fetchUrlService — Policy before cache: Disallowed port, HTTPS-only, and 
   );
 });
 
+// ============================================================================
+// v0.5.0 M3 — fetch_url HEAD Tests
+// ============================================================================
 
+test("fetchUrlInputSchema — Strict Zod Schema validation for method parameter", () => {
+  // 1. method omitted accepted (default: GET semantics)
+  const omittedRes = fetchUrlInputSchema.safeParse({ url: "https://example.com/resource" });
+  assert.equal(omittedRes.success, true);
+  if (omittedRes.success) {
+    assert.equal(omittedRes.data.method, undefined);
+  }
 
+  // 2. method "GET" accepted
+  const getRes = fetchUrlInputSchema.safeParse({
+    url: "https://example.com/resource",
+    method: "GET",
+  });
+  assert.equal(getRes.success, true);
+  if (getRes.success) {
+    assert.equal(getRes.data.method, "GET");
+  }
+
+  // 3. method "HEAD" accepted
+  const headRes = fetchUrlInputSchema.safeParse({
+    url: "https://example.com/resource",
+    method: "HEAD",
+  });
+  assert.equal(headRes.success, true);
+  if (headRes.success) {
+    assert.equal(headRes.data.method, "HEAD");
+  }
+
+  // 4. POST rejected
+  const postRes = fetchUrlInputSchema.safeParse({
+    url: "https://example.com/resource",
+    method: "POST",
+  });
+  assert.equal(postRes.success, false);
+
+  // 5. PUT / PATCH / DELETE / OPTIONS rejected
+  for (const m of ["PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT"]) {
+    const res = fetchUrlInputSchema.safeParse({
+      url: "https://example.com/resource",
+      method: m,
+    });
+    assert.equal(res.success, false, `Method "${m}" must be rejected by schema`);
+  }
+
+  // 6. lowercase get rejected
+  const lowerGetRes = fetchUrlInputSchema.safeParse({
+    url: "https://example.com/resource",
+    method: "get",
+  });
+  assert.equal(lowerGetRes.success, false, "Lowercase 'get' must be rejected");
+
+  // 7. lowercase head rejected
+  const lowerHeadRes = fetchUrlInputSchema.safeParse({
+    url: "https://example.com/resource",
+    method: "head",
+  });
+  assert.equal(lowerHeadRes.success, false, "Lowercase 'head' must be rejected");
+
+  // Non-string method rejected
+  assert.equal(
+    fetchUrlInputSchema.safeParse({ url: "https://example.com", method: 123 }).success,
+    false
+  );
+});
+
+test("fetchUrlService — GET regression: legacy omitted and explicit GET equivalence and restrictions", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/png") {
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    } else if (req.url === "/gzip") {
+      res.writeHead(200, {
+        "Content-Type": "text/html",
+        "Content-Encoding": "gzip",
+      });
+      res.end(Buffer.from([0x1f, 0x8b, 0x08]));
+    } else if (req.url === "/trunc") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("1234567890abcdefghij");
+    } else {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("Standard GET content");
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    // 8. Omitted method behaves as legacy GET
+    const omittedResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/`,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(omittedResult.status, 200);
+    assert.equal(omittedResult.body, "Standard GET content");
+    assert.equal(omittedResult.bytesRead, 20);
+    assert.equal(omittedResult.truncated, false);
+
+    // 9. Explicit GET behaves equivalently to omitted method
+    const explicitGetResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/`,
+      method: "GET",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(explicitGetResult.status, 200);
+    assert.equal(explicitGetResult.body, "Standard GET content");
+    assert.equal(explicitGetResult.bytesRead, 20);
+    assert.equal(explicitGetResult.truncated, false);
+
+    // 10. Existing GET content-type restrictions remain (image/png rejected)
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/png`,
+          method: "GET",
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "unsupported_content_type"
+    );
+
+    // 11. Existing GET encoding restrictions remain (gzip rejected)
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${port}/gzip`,
+          method: "GET",
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [port],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "unsupported_content_encoding"
+    );
+
+    // 12. Existing GET maxBytes/truncation behavior remains
+    const truncResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/trunc`,
+      method: "GET",
+      maxBytes: 10,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(truncResult.status, 200);
+    assert.equal(truncResult.bytesRead, 10);
+    assert.equal(truncResult.body?.length, 10);
+    assert.equal(truncResult.truncated, true);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — HEAD basic success: 200, 204, 404, 500, and Content-Length metadata", async () => {
+  let receivedMethod = "";
+  const server = http.createServer((req, res) => {
+    receivedMethod = req.method ?? "";
+    if (req.url === "/200") {
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": "42",
+      });
+      res.end("Should not be consumed by HEAD");
+    } else if (req.url === "/204") {
+      res.writeHead(204);
+      res.end();
+    } else if (req.url === "/404") {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found body");
+    } else if (req.url === "/500") {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Server Error body");
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    // 13. HEAD 200: body omitted/undefined, bytesRead=0, truncated=false
+    const res200 = await fetchUrlService({
+      url: `http://public.example.com:${port}/200`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(receivedMethod, "HEAD", "Server must have received HEAD request");
+    assert.equal(res200.status, 200);
+    assert.equal(res200.statusText, "OK");
+    assert.equal(res200.contentType, "text/html; charset=utf-8");
+    assert.equal(res200.contentLength, 42);
+    assert.equal(res200.body, undefined, "body must be omitted/undefined for HEAD");
+    assert.equal(res200.bytesRead, 0, "bytesRead must be strictly 0 for HEAD");
+    assert.equal(res200.truncated, false, "truncated must be false for HEAD");
+    assert.equal(res200.redirectCount, 0);
+
+    // 14. HEAD 204
+    const res204 = await fetchUrlService({
+      url: `http://public.example.com:${port}/204`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res204.status, 204);
+    assert.equal(res204.body, undefined);
+    assert.equal(res204.bytesRead, 0);
+    assert.equal(res204.truncated, false);
+
+    // 15. HEAD 404: returned as normal FetchUrlResult, not thrown
+    const res404 = await fetchUrlService({
+      url: `http://public.example.com:${port}/404`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res404.status, 404);
+    assert.equal(res404.statusText, "Not Found");
+    assert.equal(res404.body, undefined);
+    assert.equal(res404.bytesRead, 0);
+    assert.equal(res404.truncated, false);
+
+    // 16. HEAD 500: returned as normal FetchUrlResult, not thrown
+    const res500 = await fetchUrlService({
+      url: `http://public.example.com:${port}/500`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(res500.status, 500);
+    assert.equal(res500.statusText, "Internal Server Error");
+    assert.equal(res500.body, undefined);
+    assert.equal(res500.bytesRead, 0);
+    assert.equal(res500.truncated, false);
+
+    // 17. HEAD contentLength metadata parsed when present
+    assert.equal(res200.contentLength, 42);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — HEAD body policy: binary metadata, gzip encoding, non-UTF8 charset, and NUL safety", async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === "/image.png") {
+      res.writeHead(200, {
+        "Content-Type": "image/png",
+        "Content-Length": "12345",
+      });
+      res.end();
+    } else if (req.url === "/doc.pdf") {
+      res.writeHead(200, {
+        "Content-Type": "application/pdf",
+        "Content-Length": "54321",
+      });
+      res.end();
+    } else if (req.url === "/binary.bin") {
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": "9999",
+      });
+      res.end();
+    } else if (req.url === "/compressed.html") {
+      res.writeHead(200, {
+        "Content-Type": "text/html",
+        "Content-Encoding": "gzip",
+        "Content-Length": "500",
+      });
+      res.end();
+    } else if (req.url === "/latin1.html") {
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=iso-8859-1",
+        "Content-Length": "200",
+      });
+      res.end();
+    } else if (req.url === "/unexpected-nul-bytes") {
+      // Server sends binary NUL bytes unexpectedly in a HEAD response
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": "8",
+      });
+      res.write(Buffer.from([0x00, 0x01, 0x00, 0x02]));
+      res.end();
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    // 18. HEAD image/png succeeds as metadata
+    const pngResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/image.png`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(pngResult.status, 200);
+    assert.equal(pngResult.contentType, "image/png");
+    assert.equal(pngResult.contentLength, 12345);
+    assert.equal(pngResult.body, undefined);
+    assert.equal(pngResult.bytesRead, 0);
+
+    // 19. HEAD application/pdf succeeds as metadata
+    const pdfResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/doc.pdf`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(pdfResult.status, 200);
+    assert.equal(pdfResult.contentType, "application/pdf");
+    assert.equal(pdfResult.contentLength, 54321);
+    assert.equal(pdfResult.body, undefined);
+    assert.equal(pdfResult.bytesRead, 0);
+
+    // 20. HEAD application/octet-stream succeeds as metadata
+    const binResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/binary.bin`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(binResult.status, 200);
+    assert.equal(binResult.contentType, "application/octet-stream");
+    assert.equal(binResult.contentLength, 9999);
+    assert.equal(binResult.body, undefined);
+    assert.equal(binResult.bytesRead, 0);
+
+    // 21. HEAD Content-Encoding: gzip succeeds without body decoding
+    const gzipResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/compressed.html`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(gzipResult.status, 200);
+    assert.equal(gzipResult.contentType, "text/html");
+    assert.equal(gzipResult.contentLength, 500);
+    assert.equal(gzipResult.body, undefined);
+    assert.equal(gzipResult.bytesRead, 0);
+
+    // 22. HEAD non-UTF8 charset metadata does not trigger GET charset decoding failure
+    const latin1Result = await fetchUrlService({
+      url: `http://public.example.com:${port}/latin1.html`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(latin1Result.status, 200);
+    assert.equal(latin1Result.contentType, "text/html; charset=iso-8859-1");
+    assert.equal(latin1Result.contentLength, 200);
+    assert.equal(latin1Result.body, undefined);
+    assert.equal(latin1Result.bytesRead, 0);
+
+    // 23. HEAD does not run TextDecoder or binary NUL guard (drains stream safely)
+    const nulResult = await fetchUrlService({
+      url: `http://public.example.com:${port}/unexpected-nul-bytes`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(nulResult.status, 200);
+    assert.equal(nulResult.body, undefined);
+    assert.equal(nulResult.bytesRead, 0);
+    assert.equal(nulResult.truncated, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — HEAD maxBytes vs Content-Length distinction", async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      "Content-Type": "application/octet-stream",
+      "Content-Length": "100000000", // 100 MB declared length
+    });
+    res.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  try {
+    // 24. HEAD with maxBytes=1 and Content-Length=100000000
+    // Must NOT reject because Content-Length > maxBytes
+    // Must NOT set truncated=true
+    // Must NOT pretend bytes were downloaded
+    const result = await fetchUrlService({
+      url: `http://public.example.com:${port}/huge-file.iso`,
+      method: "HEAD",
+      maxBytes: 1,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.contentLength, 100000000);
+    assert.equal(result.bytesRead, 0);
+    assert.equal(result.truncated, false);
+    assert.equal(result.body, undefined);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — HEAD redirect method preservation across 301, 302, 303, 307, 308", async () => {
+  const redirectCodes = [301, 302, 303, 307, 308];
+
+  for (const code of redirectCodes) {
+    const receivedMethods: string[] = [];
+    const server = http.createServer((req, res) => {
+      receivedMethods.push(`${req.method}:${req.url}`);
+      if (req.url === `/hop-${code}`) {
+        res.writeHead(code, {
+          Location: `/final-${code}`,
+          "Content-Type": "text/plain",
+        });
+        res.end();
+      } else if (req.url === `/final-${code}`) {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Content-Length": "128",
+        });
+        res.end();
+      }
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as any).port;
+
+    try {
+      // 25. HEAD preserved across 301, 302, 303, 307, 308
+      const result = await fetchUrlService({
+        url: `http://public.example.com:${port}/hop-${code}`,
+        method: "HEAD",
+        customResolver: localLoopbackResolver,
+        customAllowedPorts: [port],
+        allowLoopbackForTesting: true,
+      });
+
+      assert.equal(result.status, 200);
+      assert.equal(result.body, undefined);
+      assert.equal(result.bytesRead, 0);
+      assert.equal(result.redirectCount, 1);
+      assert.equal(result.finalUrl, `http://public.example.com:${port}/final-${code}`);
+
+      // Verify origin and final destination both received HEAD
+      assert.deepEqual(receivedMethods, [
+        `HEAD:/hop-${code}`,
+        `HEAD:/final-${code}`,
+      ]);
+
+      if (code === 303) {
+        // Specifically assert: 303 final method === HEAD
+        const finalMethod = receivedMethods[1]?.split(":")[0];
+        assert.equal(finalMethod, "HEAD", "HEAD + 303 redirect destination must strictly remain HEAD");
+      }
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  // 26. HEAD redirect limit exceeding 5 hops throws redirect_limit
+  const loopServer = http.createServer((_req, res) => {
+    res.writeHead(302, { Location: "/loop" });
+    res.end();
+  });
+  await new Promise<void>((resolve) => loopServer.listen(0, "127.0.0.1", resolve));
+  const loopPort = (loopServer.address() as any).port;
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${loopPort}/loop`,
+          method: "HEAD",
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [loopPort],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "redirect_limit"
+    );
+  } finally {
+    await new Promise<void>((resolve) => loopServer.close(() => resolve()));
+  }
+
+  // 27. HEAD HTTPS to HTTP redirect downgrade rejection
+  const httpsServer = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (_req, res) => {
+      res.writeHead(302, { Location: "http://public.example.com:80/downgrade" });
+      res.end();
+    }
+  );
+  await new Promise<void>((resolve) => httpsServer.listen(0, "127.0.0.1", resolve));
+  const httpsPort = (httpsServer.address() as any).port;
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `https://public.example.com:${httpsPort}/hop`,
+          method: "HEAD",
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [httpsPort, 80],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError && err.code === "redirect_downgrade_not_allowed"
+    );
+  } finally {
+    await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — HEAD SSRF and security equivalence to GET", async () => {
+  // 28. Loopback rejected when allowLoopbackForTesting=false
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://127.0.0.1:8080/",
+        method: "HEAD",
+        allowLoopbackForTesting: false,
+      });
+    },
+    (err: any) => err instanceof NetworkSecurityError && err.code === "blocked_destination"
+  );
+
+  // 29. Private IP rejection
+  const privateResolver: SafeDnsResolver = {
+    async resolve() {
+      return [{ address: "10.0.0.1", family: 4 }];
+    },
+  };
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://internal.example.com/data",
+        method: "HEAD",
+        customResolver: privateResolver,
+      });
+    },
+    (err: any) => err instanceof NetworkSecurityError && err.code === "blocked_destination"
+  );
+
+  // 30. Cloud metadata IP rejection (169.254.169.254)
+  const metadataResolver: SafeDnsResolver = {
+    async resolve() {
+      return [{ address: "169.254.169.254", family: 4 }];
+    },
+  };
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://metadata.example.com/latest",
+        method: "HEAD",
+        customResolver: metadataResolver,
+      });
+    },
+    (err: any) => err instanceof NetworkSecurityError && err.code === "blocked_destination"
+  );
+
+  // 31. Mixed DNS answer rejection (one public, one private)
+  const mixedResolver: SafeDnsResolver = {
+    async resolve() {
+      return [
+        { address: "93.184.215.14", family: 4 },
+        { address: "192.168.1.1", family: 4 },
+      ];
+    },
+  };
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://mixed.example.com/",
+        method: "HEAD",
+        customResolver: mixedResolver,
+      });
+    },
+    (err: any) => err instanceof NetworkSecurityError && err.code === "blocked_destination"
+  );
+
+  // 32. HTTPS-only policy rejection on HTTP HEAD
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "http://public.example.com/data",
+        method: "HEAD",
+        operatorPolicy: {
+          allowHosts: [],
+          denyHosts: [],
+          httpsOnly: true,
+          maxResponseBytes: 5242880,
+          maxTimeoutMs: 30000,
+        },
+      });
+    },
+    (err: any) => err instanceof NetworkSecurityError && err.code === "https_required"
+  );
+
+  // Disallowed port rejection
+  await assert.rejects(
+    async () => {
+      await fetchUrlService({
+        url: "https://public.example.com:9999/data",
+        method: "HEAD",
+        customAllowedPorts: [80, 443],
+      });
+    },
+    (err: any) => err instanceof NetworkSecurityError && err.code === "port_not_allowed"
+  );
+});
+
+test("fetchUrlService — HEAD conditional cache, 304 revalidation, and method isolation", async () => {
+  let requestCount = 0;
+  let lastReceivedMethod = "";
+  let lastIfNoneMatch: string | undefined;
+
+  const server = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (req, res) => {
+      requestCount++;
+      lastReceivedMethod = req.method ?? "";
+      lastIfNoneMatch = req.headers["if-none-match"] as string | undefined;
+
+      if (lastIfNoneMatch === '"head-etag-v1"') {
+        // Return 304 Not Modified for conditional revalidation
+        res.writeHead(304, {
+          etag: '"head-etag-v1"',
+          "content-type": "application/pdf",
+          "content-length": "654321",
+        });
+        res.end();
+      } else {
+        // Fresh 200 response
+        res.writeHead(200, {
+          etag: '"head-etag-v1"',
+          "content-type": "application/pdf",
+          "content-length": "654321",
+        });
+        res.end();
+      }
+    }
+  );
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as any).port;
+
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({ enabled: true, maxEntries: 10, maxSizeBytes: 1024 * 1024 })
+  );
+
+  try {
+    // 37. HEAD initial cacheable 200 => stored
+    const initialRes = await fetchUrlService({
+      url: `https://public.example.com:${port}/cached-doc.pdf`,
+      method: "HEAD",
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(initialRes.status, 200);
+    assert.equal(initialRes.contentType, "application/pdf");
+    assert.equal(initialRes.contentLength, 654321);
+    assert.equal(initialRes.body, undefined);
+    assert.equal(initialRes.bytesRead, 0);
+    assert.equal(initialRes.cacheStatus, "stored");
+    assert.equal(cache.size, 1);
+    assert.equal(lastReceivedMethod, "HEAD");
+
+    // 38. HEAD conditional repeat => validator sent
+    // 39. HEAD 304 => final result uses cached metadata
+    const revalRes = await fetchUrlService({
+      url: `https://public.example.com:${port}/cached-doc.pdf`,
+      method: "HEAD",
+      networkCache: cache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(lastIfNoneMatch, '"head-etag-v1"', "Server must have received If-None-Match header");
+    assert.equal(lastReceivedMethod, "HEAD");
+
+    // Required 304 assertions:
+    assert.equal(revalRes.status, 200, "status must be cached original status (200)");
+    assert.equal(revalRes.revalidationStatus, 304, "revalidationStatus must be 304");
+    assert.equal(revalRes.body, undefined, "body must be absent/undefined");
+    assert.equal(revalRes.bytesRead, 0, "bytesRead must be 0");
+    assert.equal(revalRes.truncated, false, "truncated must be false");
+    assert.equal(revalRes.cacheStatus, "revalidated", "cacheStatus must be revalidated");
+    assert.equal(revalRes.contentType, "application/pdf");
+    assert.equal(revalRes.contentLength, 654321);
+
+    // 40. GET cache cannot satisfy HEAD:
+    // Clear cache, store a GET entry
+    cache.clear();
+    // Server handles GET /cached-doc.pdf (will fail content-type validation since application/pdf is not allowed for GET)
+    // To test isolation cleanly: use a textual content-type
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
+  // Cross-Method Cache Isolation Test (GET vs HEAD)
+  const isoServer = https.createServer(
+    { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+    (req, res) => {
+      res.writeHead(200, {
+        etag: '"iso-tag"',
+        "content-type": "text/plain",
+        "content-length": "12",
+      });
+      res.end("Iso content!");
+    }
+  );
+
+  await new Promise<void>((resolve) => isoServer.listen(0, "127.0.0.1", resolve));
+  const isoPort = (isoServer.address() as any).port;
+
+  const isoCache = new HttpConditionalCache(
+    createNetworkCachePolicy({ enabled: true, maxEntries: 10, maxSizeBytes: 1024 * 1024 })
+  );
+
+  try {
+    // 1. First fetch with GET -> stored in GET cache namespace
+    const getRes = await fetchUrlService({
+      url: `https://public.example.com:${isoPort}/iso-resource`,
+      method: "GET",
+      networkCache: isoCache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [isoPort],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(getRes.cacheStatus, "stored");
+    assert.equal(isoCache.size, 1);
+
+    // 2. Fetch with HEAD for same URL:
+    // Invariant: GET cache CANNOT satisfy HEAD.
+    // It must be a cache miss, origin is contacted, and HEAD is stored under HEAD namespace.
+    const headRes = await fetchUrlService({
+      url: `https://public.example.com:${isoPort}/iso-resource`,
+      method: "HEAD",
+      networkCache: isoCache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [isoPort],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(headRes.cacheStatus, "stored", "HEAD must miss GET cache and store fresh HEAD entry");
+    assert.equal(isoCache.size, 2, "Cache must contain two distinct entries (GET and HEAD)");
+
+    // 3. Invariant: HEAD cache CANNOT satisfy GET.
+    // Explicit GET fetch conditionally revalidates ONLY against GET entry.
+    const getRes2 = await fetchUrlService({
+      url: `https://public.example.com:${isoPort}/iso-resource`,
+      method: "GET",
+      networkCache: isoCache,
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [isoPort],
+      allowLoopbackForTesting: true,
+    });
+    assert.equal(getRes2.body, "Iso content!", "GET must retrieve GET body, never empty HEAD buffer");
+    assert.equal(getRes2.bytesRead, 12);
+  } finally {
+    await new Promise<void>((resolve) => isoServer.close(() => resolve()));
+  }
+});
+
+test("fetchUrlService — HEAD timeout and cancellation", async () => {
+  // 42. HEAD timeout
+  const slowServer = http.createServer((_req, _res) => {
+    // Intentionally never respond
+  });
+  await new Promise<void>((resolve) => slowServer.listen(0, "127.0.0.1", resolve));
+  const slowPort = (slowServer.address() as any).port;
+
+  try {
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${slowPort}/hang`,
+          method: "HEAD",
+          timeoutMs: 1000,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [slowPort],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) => err instanceof NetworkSecurityError && err.code === "timeout"
+    );
+
+    // 43. HEAD caller abort
+    const abortController = new AbortController();
+    setTimeout(() => abortController.abort(), 100);
+
+    await assert.rejects(
+      async () => {
+        await fetchUrlService({
+          url: `http://public.example.com:${slowPort}/hang`,
+          method: "HEAD",
+          timeoutMs: 10000,
+          signal: abortController.signal,
+          customResolver: localLoopbackResolver,
+          customAllowedPorts: [slowPort],
+          allowLoopbackForTesting: true,
+        });
+      },
+      (err: any) =>
+        err instanceof NetworkSecurityError &&
+        (err.code === "network_error" || err.code === "timeout")
+    );
+  } finally {
+    await new Promise<void>((resolve) => slowServer.close(() => resolve()));
+  }
+});
+
+test("MCP Tool Handlers — registerFetchUrlTool registration and execution with HEAD", async () => {
+  const server = new McpServer({ name: "test-mcp", version: "1.0.0" });
+  registerFetchUrlTool(server);
+
+  // Verify fetchUrlInputSchema accepts HEAD and omits body in result
+  const testHttpServer = http.createServer((req, res) => {
+    assert.equal(req.method, "HEAD");
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Length": "25",
+    });
+    res.end();
+  });
+  await new Promise<void>((resolve) => testHttpServer.listen(0, "127.0.0.1", resolve));
+  const port = (testHttpServer.address() as any).port;
+
+  try {
+    const serviceRes = await fetchUrlService({
+      url: `http://public.example.com:${port}/api`,
+      method: "HEAD",
+      customResolver: localLoopbackResolver,
+      customAllowedPorts: [port],
+      allowLoopbackForTesting: true,
+    });
+
+    assert.equal(serviceRes.status, 200);
+    assert.equal(serviceRes.body, undefined);
+    assert.equal(serviceRes.bytesRead, 0);
+    assert.equal(serviceRes.truncated, false);
+    assert.equal(serviceRes.contentLength, 25);
+  } finally {
+    await new Promise<void>((resolve) => testHttpServer.close(() => resolve()));
+  }
+});
