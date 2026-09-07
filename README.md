@@ -72,6 +72,9 @@ Add to your MCP configuration (e.g. `claude_desktop_config.json`):
 }
 ```
 
+#### MCP Inspector Testing
+For local testing and interactive debugging with `@modelcontextprotocol/inspector`, refer to the configuration template in [`examples/inspector-workspace.example.json`](examples/inspector-workspace.example.json).
+
 ### Local Development / Source Execution
 
 ```bash
@@ -503,11 +506,15 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 
 ## Environment Variables
 
+See [`.env.example`](.env.example) for a ready-to-use template containing all supported environment variables.
+
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
+| `MCP_WORKSPACE_MAX_WRITE_BYTES` | `number` | `1048576` | Operator workspace write size cap in bytes override (1 to 5242880) |
+| `MCP_WORKSPACE_MAX_RESOURCE_BYTES` | `number` | `1048576` | Operator workspace resource read size cap in bytes override (1 to 5242880) |
 | `MCP_WORKSPACE_WRITE_CONFIRMATION` | `boolean` | `false` | Require client-mediated write/edit approval (`true`/`1`/`false`/`0`) |
 | `MCP_NETWORK_ALLOW_HOSTS_JSON` | `string` | *(none)* | JSON array of allowed public host patterns (e.g. `["example.com","*.githubusercontent.com"]`) |
 | `MCP_NETWORK_DENY_HOSTS_JSON` | `string` | *(none)* | JSON array of denied host patterns (e.g. `["ads.example.com"]`) |

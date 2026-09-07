@@ -33,6 +33,14 @@ npm ci
 
 All quality gates (`typecheck`, `test`, `build`, `security:package`, `smoke:package`) must pass before submitting a pull request.
 
+### Testing with MCP Inspector
+
+For interactive debugging and manual verification during development with `@modelcontextprotocol/inspector`, use the configuration in [`examples/inspector-workspace.example.json`](examples/inspector-workspace.example.json):
+
+```bash
+npx @modelcontextprotocol/inspector node dist/index.js --profile=workspace --root=.
+```
+
 ### Temporary build dependency override
 
 `package.json` overrides only `tsup`'s esbuild dependency to `0.28.2` because tsup 8.5.1 still requests `^0.27.0`, which includes versions affected by [GHSA-g7r4-m6w7-qqqr](https://github.com/evanw/esbuild/security/advisories/GHSA-g7r4-m6w7-qqqr). This is a development-only dependency; the advisory concerns esbuild's Windows development server, not the MCP HTTP transport.
