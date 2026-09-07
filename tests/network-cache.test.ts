@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   checkResponseCacheEligibility,
@@ -571,4 +572,221 @@ test("HttpConditionalCache — Retention TTL Expiration", async () => {
   await new Promise((resolve) => setTimeout(resolve, 1100));
 
   assert.equal(cache.get("temp-key"), undefined);
+});
+
+test("Network Cache Key — Legacy GET preimage preservation and HEAD isolation", () => {
+  const testUrls = [
+    new URL("https://example.com/data"),
+    new URL("https://example.com/api/v1/resource#hash"),
+    new URL("https://example.com:443/data"),
+  ];
+
+  // Query parameter URLs are uncacheable for both GET and HEAD
+  const queryUrl = new URL("https://example.com/data?query=1");
+  assert.equal(computeCacheKey(queryUrl), null);
+  assert.equal(computeCacheKey(queryUrl, "GET"), null);
+  assert.equal(computeCacheKey(queryUrl, "HEAD"), null);
+
+  for (const url of testUrls) {
+    const canonicalUrl = url.protocol + "//" + url.host + url.pathname;
+
+    // 1. GET omitted key === GET explicit key
+    const omittedKey = computeCacheKey(url);
+    const explicitGetKey = computeCacheKey(url, "GET");
+    assert.equal(omittedKey, explicitGetKey, "Omitted method must match explicit GET key");
+
+    // 2. Existing legacy GET preimage is exactly preserved: "network-fetch-v1\0" + canonicalUrl
+    const expectedLegacyPreimage = "network-fetch-v1\0" + canonicalUrl;
+    const expectedLegacyHash = createHash("sha256").update(expectedLegacyPreimage, "utf8").digest("hex");
+    assert.equal(omittedKey, expectedLegacyHash, "GET cache key must match legacy preimage hash");
+    assert.equal(explicitGetKey, expectedLegacyHash, "Explicit GET cache key must match legacy preimage hash");
+
+    // 3. HEAD key !== GET key
+    const headKey = computeCacheKey(url, "HEAD");
+    assert.notEqual(headKey, explicitGetKey, "HEAD cache key must never equal GET cache key");
+    assert.notEqual(headKey, omittedKey, "HEAD cache key must never equal omitted method cache key");
+
+    // 4. HEAD preimage is collision-safe and isolated: "network-fetch-v1\0HEAD\0" + canonicalUrl
+    const expectedHeadPreimage = "network-fetch-v1\0HEAD\0" + canonicalUrl;
+    const expectedHeadHash = createHash("sha256").update(expectedHeadPreimage, "utf8").digest("hex");
+    assert.equal(headKey, expectedHeadHash, "HEAD cache key must match HEAD preimage hash");
+  }
+});
+
+test("Network Cache Eligibility — HEAD binary metadata and Content-Encoding rules", () => {
+  const httpsUrl = new URL("https://example.com/image.png");
+
+  // 1. HEAD binary metadata (image/png) with ETag is eligible
+  const headPng = checkResponseCacheEligibility({
+    targetUrl: httpsUrl,
+    method: "HEAD",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: {
+      "content-type": "image/png",
+      etag: '"png-123"',
+    },
+  });
+  assert.equal(headPng.eligible, true);
+  assert.equal(headPng.sanitizedEtag, '"png-123"');
+
+  // 2. HEAD application/pdf with Last-Modified is eligible
+  const headPdf = checkResponseCacheEligibility({
+    targetUrl: new URL("https://example.com/doc.pdf"),
+    method: "HEAD",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: {
+      "content-type": "application/pdf",
+      "last-modified": "Wed, 21 Oct 2026 07:28:00 GMT",
+    },
+  });
+  assert.equal(headPdf.eligible, true);
+  assert.equal(headPdf.sanitizedLastModified, "Wed, 21 Oct 2026 07:28:00 GMT");
+
+  // 3. Content-Encoding: gzip
+  // For GET: rejected as compressed_content_encoding
+  const getGzip = checkResponseCacheEligibility({
+    targetUrl: new URL("https://example.com/data.json"),
+    method: "GET",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: {
+      "content-type": "application/json",
+      "content-encoding": "gzip",
+      etag: '"gzip-123"',
+    },
+  });
+  assert.equal(getGzip.eligible, false);
+  assert.equal(getGzip.reason, "compressed_content_encoding");
+
+  // For HEAD: eligible since no body is cached or decoded
+  const headGzip = checkResponseCacheEligibility({
+    targetUrl: new URL("https://example.com/data.json"),
+    method: "HEAD",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: {
+      "content-type": "application/json",
+      "content-encoding": "gzip",
+      etag: '"gzip-123"',
+    },
+  });
+  assert.equal(headGzip.eligible, true);
+
+  // 4. Standard security constraints still apply to HEAD
+  // HTTP (non-https) rejected
+  const headHttp = checkResponseCacheEligibility({
+    targetUrl: new URL("http://example.com/image.png"),
+    method: "HEAD",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: { etag: '"tag"' },
+  });
+  assert.equal(headHttp.eligible, false);
+  assert.equal(headHttp.reason, "http_not_cached");
+
+  // Query parameters rejected
+  const headQuery = checkResponseCacheEligibility({
+    targetUrl: new URL("https://example.com/image.png?v=1"),
+    method: "HEAD",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: { etag: '"tag"' },
+  });
+  assert.equal(headQuery.eligible, false);
+  assert.equal(headQuery.reason, "query_urls_not_cached");
+
+  // Redirect hops rejected
+  const headRedirect = checkResponseCacheEligibility({
+    targetUrl: httpsUrl,
+    method: "HEAD",
+    redirectCount: 1,
+    status: 200,
+    truncated: false,
+    headers: { etag: '"tag"' },
+  });
+  assert.equal(headRedirect.eligible, false);
+  assert.equal(headRedirect.reason, "redirects_not_cached");
+
+  // Missing validator rejected
+  const headNoValidator = checkResponseCacheEligibility({
+    targetUrl: httpsUrl,
+    method: "HEAD",
+    redirectCount: 0,
+    status: 200,
+    truncated: false,
+    headers: { "content-type": "image/png" },
+  });
+  assert.equal(headNoValidator.eligible, false);
+  assert.equal(headNoValidator.reason, "missing_or_invalid_validator");
+});
+
+test("HttpConditionalCache — HEAD entries storage (Buffer.alloc(0)) and bidirectional method isolation", () => {
+  const cache = new HttpConditionalCache(
+    createNetworkCachePolicy({
+      enabled: true,
+      maxEntries: 10,
+      maxSizeBytes: 1024 * 1024,
+    })
+  );
+
+  const testUrl = new URL("https://example.com/resource");
+  const getKey = computeCacheKey(testUrl, "GET");
+  const headKey = computeCacheKey(testUrl, "HEAD");
+
+  // Store HEAD entry
+  const headEntry: CachedHttpResponse = {
+    bodyBuffer: Buffer.alloc(0),
+    status: 200,
+    statusText: "OK",
+    contentType: "image/png",
+    contentLength: 204800,
+    etag: '"head-etag-1"',
+    storedAt: Date.now(),
+  };
+  cache.set(headKey, headEntry);
+
+  // HEAD key retrieves the entry
+  const retrievedHead = cache.get(headKey);
+  assert.ok(retrievedHead);
+  assert.equal(retrievedHead.status, 200);
+  assert.equal(retrievedHead.contentType, "image/png");
+  assert.equal(retrievedHead.contentLength, 204800);
+  assert.equal(retrievedHead.bodyBuffer.byteLength, 0);
+
+  // Invariant: GET cache query cannot satisfy HEAD entry
+  assert.equal(cache.get(getKey), undefined, "GET lookup MUST NOT find HEAD entry");
+
+  // Store GET entry for same resource
+  const getEntry: CachedHttpResponse = {
+    bodyBuffer: Buffer.from("GET representation text", "utf8"),
+    status: 200,
+    statusText: "OK",
+    contentType: "text/plain",
+    contentLength: 23,
+    etag: '"get-etag-1"',
+    storedAt: Date.now(),
+  };
+  cache.set(getKey, getEntry);
+
+  // Invariant: HEAD lookup retrieves HEAD entry, NOT GET entry
+  const secondHeadLookup = cache.get(headKey);
+  assert.ok(secondHeadLookup);
+  assert.equal(secondHeadLookup.etag, '"head-etag-1"');
+  assert.equal(secondHeadLookup.contentType, "image/png");
+  assert.equal(secondHeadLookup.bodyBuffer.byteLength, 0);
+
+  // Invariant: GET lookup retrieves GET entry, NOT HEAD entry
+  const getLookup = cache.get(getKey);
+  assert.ok(getLookup);
+  assert.equal(getLookup.etag, '"get-etag-1"');
+  assert.equal(getLookup.contentType, "text/plain");
+  assert.equal(getLookup.bodyBuffer.toString("utf8"), "GET representation text");
 });

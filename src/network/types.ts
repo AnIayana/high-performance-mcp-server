@@ -66,6 +66,7 @@ export type FetchUrlCacheStatus =
 
 export interface FetchUrlOptions {
   readonly url: string;
+  readonly method?: "GET" | "HEAD";
   readonly maxBytes?: number;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
