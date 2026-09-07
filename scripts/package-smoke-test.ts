@@ -57,6 +57,7 @@ async function runPackageSmokeTest(): Promise<void> {
   // Verify essential files are included
   assert.ok(filesList.includes("bin/cli.js"), "Payload must contain bin/cli.js");
   assert.ok(filesList.includes("dist/index.js"), "Payload must contain dist/index.js");
+  assert.ok(filesList.includes("dist/cli.js"), "Payload must contain dist/cli.js");
   assert.ok(
     filesList.includes("dist/workers/compute.worker.js"),
     "Payload must contain dist/workers/compute.worker.js"
@@ -176,8 +177,111 @@ async function runPackageSmokeTest(): Promise<void> {
       "Installed package.json version must match"
     );
     console.log(`[Smoke Test] Installed package mcpName metadata validated: ${installedPackageJson.mcpName}`);
+
+    // 10. Test programmatic root library usage (JavaScript ESM)
+    console.log(`[Smoke Test] Testing programmatic library imports from installed package (JavaScript ESM)...`);
+    const testConsumerScript = `
+import * as pkg from "${packageJson.name}";
+import { createServer, resolveWorkspaceConfig } from "${packageJson.name}";
+import assert from "node:assert/strict";
+
+// Verify public functions
+assert.equal(typeof pkg.createServer, "function", "createServer must be exported");
+assert.equal(typeof pkg.resolveWorkspaceConfig, "function", "resolveWorkspaceConfig must be exported");
+assert.equal(typeof createServer, "function", "named createServer must be exported");
+assert.equal(typeof resolveWorkspaceConfig, "function", "named resolveWorkspaceConfig must be exported");
+
+// Verify internal functions are NOT exported
+assert.equal(pkg.closeWorkerPool, undefined, "closeWorkerPool must not be exported");
+assert.equal(pkg.createWorkspaceOperatorPolicy, undefined, "createWorkspaceOperatorPolicy must not be exported");
+assert.equal(pkg.createNetworkOperatorPolicy, undefined, "createNetworkOperatorPolicy must not be exported");
+assert.equal(pkg.createNetworkCachePolicy, undefined, "createNetworkCachePolicy must not be exported");
+assert.equal(pkg.createHttpTransportServer, undefined, "createHttpTransportServer must not be exported");
+assert.equal(pkg.startHttpTransport, undefined, "startHttpTransport must not be exported");
+assert.equal(pkg.startStdioTransport, undefined, "startStdioTransport must not be exported");
+
+// Verify factory and lifecycle
+const server = createServer();
+assert.ok(server, "createServer() must return server instance");
+await server.close();
+
+// Verify deep import without exports map works
+const deepModule = await import("${packageJson.name}/dist/index.js");
+assert.equal(typeof deepModule.createServer, "function", "Deep import dist/index.js must resolve");
+
+console.log("[Programmatic Smoke] All programmatic assertions passed.");
+`;
+
+    fs.writeFileSync(path.join(tempDir, "consumer-test.mjs"), testConsumerScript);
+    const progOut = execSync(`node consumer-test.mjs`, {
+      cwd: tempDir,
+      encoding: "utf-8",
+    }).trim();
+
+    assert.ok(
+      progOut.includes("[Programmatic Smoke] All programmatic assertions passed."),
+      "Programmatic smoke test script must pass cleanly"
+    );
+    console.log(`[Smoke Test] Programmatic JS library usage validated successfully.`);
+
+    // 11. Test TypeScript NodeNext consumer typechecking (Section 35)
+    console.log(`[Smoke Test] Testing TypeScript NodeNext consumer with installed package...`);
+    const tsConsumerScript = `
+import {
+  createServer,
+  resolveWorkspaceConfig,
+  type CreateServerOptions,
+  type ToolProfile,
+  type WorkspaceConfig,
+  type WorkspaceRoot,
+} from "${packageJson.name}";
+import type { McpServer } from "@modelcontextprotocol/server";
+
+const profile: ToolProfile = "safe";
+const opts: CreateServerOptions = { profile };
+const server: McpServer = createServer(opts);
+await server.close();
+
+const config: WorkspaceConfig = await resolveWorkspaceConfig(["."]);
+const roots: readonly WorkspaceRoot[] = config.roots;
+if (roots.length > 0) {
+  const r: WorkspaceRoot = roots[0];
+  void r.id;
+  void r.name;
+  void r.path;
+  void r.realPath;
+}
+`;
+    fs.writeFileSync(path.join(tempDir, "consumer-test.ts"), tsConsumerScript);
+    const tsConfig = {
+      compilerOptions: {
+        target: "ES2022",
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+      },
+      include: ["consumer-test.ts"],
+    };
+    fs.writeFileSync(path.join(tempDir, "tsconfig.json"), JSON.stringify(tsConfig, null, 2));
+
+    const tscBin = path.join(rootDir, "node_modules", "typescript", "bin", "tsc");
+    try {
+      execSync(`node "${tscBin}" --project tsconfig.json`, {
+        cwd: tempDir,
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+    } catch (err: unknown) {
+      const e = err as { stdout?: string; stderr?: string };
+      console.error("[Smoke Test] TSC stdout:", e.stdout);
+      console.error("[Smoke Test] TSC stderr:", e.stderr);
+      throw err;
+    }
+    console.log(`[Smoke Test] TypeScript NodeNext compilation validated successfully.`);
   } finally {
-    // 10. Cleanup
+    // 11. Cleanup
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {

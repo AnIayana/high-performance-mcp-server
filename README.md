@@ -85,11 +85,46 @@ npm install
 npm run build
 
 # Run default safe profile
-node dist/index.js
+node dist/cli.js
 
 # Run workspace profile with allowlisted root
-node dist/index.js --profile=workspace --root=.
+node dist/cli.js --profile=workspace --root=.
 ```
+
+---
+
+## Programmatic Node.js Usage
+
+The server can be embedded directly into Node.js applications (ESM-only, Node >=22):
+
+```typescript
+import {
+  createServer,
+  resolveWorkspaceConfig,
+} from "high-performance-mcp-server";
+
+// 1. Safe default server (only 'echo' and 'ping' enabled)
+const safeServer = createServer();
+
+// Connect to transport or execute within application...
+
+// Gracefully close protocol sessions when done
+await safeServer.close();
+
+// 2. Workspace profile with canonicalized roots
+const workspaceConfig = await resolveWorkspaceConfig(["/path/to/project"]);
+const workspaceServer = createServer({
+  profile: "workspace",
+  workspaceConfig,
+});
+
+await workspaceServer.close();
+```
+
+> [!NOTE]
+> - Multiple server instances in the same Node.js process share process-global compute cache, worker pool, and metrics.
+> - Local `WorkspaceConfig` objects may contain canonical absolute filesystem paths for local host validation; physical host paths are never exposed over remote MCP client protocols.
+
 
 ---
 
