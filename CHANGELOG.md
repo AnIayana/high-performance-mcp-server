@@ -16,9 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed & Hardened
 
-- **No-Clobber Fail-Closed Hardening**: Create-mode file publication no longer falls back to an unsafe check-then-rename path when hard-link publication is unavailable. `fs.link` serves as the primary publication primitive; unsupported hard-link publication fails closed without overwriting existing files, and unexpected native filesystem errors are sanitized.
-- Preserved existing default behavior, schema shapes, and error conventions across all tools when new parameters are omitted.
-- Maintained exact 20-tool, 8-profile, 4-prompt, and 1-resource public surface with zero dependency drift.
+- **Intentional Create-Mode Hardening**: Create-mode file publication no longer falls back to an unsafe check-then-rename path when hard-link publication is unavailable. `fs.link` serves as the primary publication primitive; on filesystems where hard-link no-clobber publication is unavailable, create-mode writes now fail closed instead of using the previous check-then-rename fallback. Existing targets are never overwritten and unexpected native filesystem errors are sanitized.
+
+### Additive Options & Compatibility
+
+- **Additive Optional Inputs**: The new `contextLines`, `maxDepth`, `createParents`, and `fetch_url.method` inputs are optional. Existing callers that omit them retain their established default semantics (`search_text` omits context arrays, `list_directory` lists immediate children at depth 1, `write_text_file` requires existing parent directories, and `fetch_url` defaults to `GET`).
+- **Canonical Catalog & Zero Dependency Drift**: The public catalog remains exactly 20 tools, 8 profiles, 4 prompts, and 1 resource template, with zero new runtime dependencies.
 
 ## [0.4.0] - 2026-09-02
 

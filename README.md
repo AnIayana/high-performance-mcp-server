@@ -9,6 +9,8 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 > [!NOTE]
 > **Status**: `0.5.0` Public Preview.
 > This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
+>
+> **Compatibility**: The new v0.5 options are additive. Existing callers that omit `contextLines`, `maxDepth`, `createParents`, and `fetch_url.method` retain their established default semantics. v0.5 also includes an intentional create-mode publication hardening: filesystems that cannot provide hard-link no-clobber publication now fail closed instead of using the previous check-then-rename fallback.
 
 ---
 
