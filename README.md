@@ -101,10 +101,14 @@ node dist/cli.js --transport=http --port=3000
 The server can run over Streamable HTTP on loopback:
 
 ```bash
+# Using CLI flag
 node dist/cli.js --transport=http --port=3000
+
+# Or using environment variable
+MCP_TRANSPORT=http PORT=3000 node dist/cli.js
 ```
 
-When running with `--transport=http`:
+When running with HTTP transport (`--transport=http` or `MCP_TRANSPORT=http`):
 - **Protocol Endpoint**: `http://127.0.0.1:3000/mcp` (Streamable HTTP protocol handler)
 - **Health Endpoint**: `http://127.0.0.1:3000/healthz` (operational liveness probe)
 
@@ -561,9 +565,11 @@ high-performance-mcp-server --transport=http --port=8080 --profile=workspace --r
 
 ## HTTP Transport Details
 
-When started with `--transport=http`, the server launches a Streamable HTTP transport using Node.js built-in `node:http`:
+When started with `--transport=http` or `MCP_TRANSPORT=http`, the server launches a Streamable HTTP transport using Node.js built-in `node:http`:
+- **Precedence**: `--transport` > `MCP_TRANSPORT` > default (`stdio`).
 - **Endpoint**: `http://127.0.0.1:<port>/mcp`
-- **Security**: The server binds strictly to `127.0.0.1` and validates `Host` and `Origin` headers to protect against DNS rebinding and cross-site request forgery.
+- **Scope**: The transport configuration applies exclusively to the CLI executable and does not alter the programmatic `createServer` API.
+- **Security**: The server binds strictly to loopback (`127.0.0.1`) and validates `Host` and `Origin` headers to protect against DNS rebinding and cross-site request forgery.
 - **Warning**: Do not expose the HTTP transport directly to untrusted networks without an authenticating reverse proxy or gateway.
 
 ---
@@ -590,6 +596,7 @@ See [`.env.example`](.env.example) for a ready-to-use template containing all su
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
+| `MCP_TRANSPORT` | `string` | `stdio` | Transport protocol override (`stdio`, `http`). CLI `--transport` overrides this variable. |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
 | `MCP_LOG_LEVEL` | `string` | `info` | Operational log level override (`debug`, `info`, `warn`, `error`, `off`) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
