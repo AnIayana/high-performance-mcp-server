@@ -550,4 +550,38 @@ test("CLI Parser — workspace resource operator policy CLI flags and environmen
   assert.ok(highEnvRes.error?.includes("Invalid MCP_WORKSPACE_MAX_RESOURCE_BYTES"));
 });
 
+test("CLI Parser — log-level parsing and validation", () => {
+  // Defaults to undefined in parsed config (process-global env bootstrap handles default info)
+  assert.equal(parseCliArgs([], {}).logLevel, undefined);
+
+  // Valid values via =
+  assert.equal(parseCliArgs(["--log-level=debug"], {}).logLevel, "debug");
+  assert.equal(parseCliArgs(["--log-level=info"], {}).logLevel, "info");
+  assert.equal(parseCliArgs(["--log-level=warn"], {}).logLevel, "warn");
+  assert.equal(parseCliArgs(["--log-level=error"], {}).logLevel, "error");
+  assert.equal(parseCliArgs(["--log-level=off"], {}).logLevel, "off");
+
+  // Valid values via space
+  assert.equal(parseCliArgs(["--log-level", "warn"], {}).logLevel, "warn");
+  assert.equal(parseCliArgs(["--log-level", "DEBUG"], {}).logLevel, "debug");
+
+  // Duplicate flag fails
+  const dupRes = parseCliArgs(["--log-level=info", "--log-level=warn"], {});
+  assert.ok(dupRes.error?.includes('Duplicate option specified: "--log-level"'));
+
+  // Missing value fails
+  const missingRes = parseCliArgs(["--log-level"], {});
+  assert.ok(missingRes.error?.includes('Missing value for option "--log-level"'));
+
+  // Invalid value fails
+  const invalidRes = parseCliArgs(["--log-level=verbose"], {});
+  assert.ok(invalidRes.error?.includes('Invalid log level option: "verbose"'));
+});
+
+test("CLI Parser — getHelpText includes --log-level and MCP_LOG_LEVEL", () => {
+  const help = getHelpText();
+  assert.ok(help.includes("--log-level=<level>"));
+  assert.ok(help.includes("MCP_LOG_LEVEL"));
+});
+
 

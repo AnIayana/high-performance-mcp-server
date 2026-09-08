@@ -102,7 +102,7 @@ export class WorkerPool {
         return parsed;
       }
       log("warn", "invalid_worker_count_override", {
-        provided: rawEnv,
+        variable: "MCP_WORKER_COUNT",
         message: "MCP_WORKER_COUNT must be an integer between 1 and 16. Using default.",
       });
     }

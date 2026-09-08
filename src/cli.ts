@@ -1,6 +1,7 @@
 import process from "node:process";
 import { getHelpText, getPackageVersion, parseCliArgs } from "./config/cli.js";
 import { resolveWorkspaceConfig, type WorkspaceConfig } from "./config/workspace.js";
+import { setLogLevel } from "./core/logger.js";
 import { getToolsForProfile } from "./tools/index.js";
 import { startHttpTransport } from "./transports/http.js";
 import { startStdioTransport } from "./transports/stdio.js";
@@ -15,6 +16,10 @@ async function main(): Promise<void> {
     process.stderr.write(`[Error] ${config.error}\n\n`);
     process.stderr.write(getHelpText());
     process.exit(1);
+  }
+
+  if (config.logLevel) {
+    setLogLevel(config.logLevel);
   }
 
   if (config.action === "help") {

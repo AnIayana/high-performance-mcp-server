@@ -528,6 +528,7 @@ Options:
   --network-cache-max-size-bytes=<n> Logical max cache payload size in bytes (1024-67108864, default: 16777216)
   --network-cache-max-entries=<n> Max cache entry count (1-512, default: 128)
   --network-cache-ttl-ms=<n>     Max cache retention TTL in ms (1000-3600000, default: 300000)
+  --log-level=<level>            Operational log level (debug|info|warn|error|off, default: info)
   --list-tools                   Display available tools for the active profile and exit
   --help, -h                     Show this help message and exit
   --version, -v                  Show version and exit
@@ -567,6 +568,21 @@ When started with `--transport=http`, the server launches a Streamable HTTP tran
 
 ---
 
+## Operational Logging & Levels
+
+The server emits structured JSON Lines operational logs exclusively to `stderr`:
+- **Log Levels**: `debug`, `info`, `warn`, `error`, `off` (default: `info`).
+- **Configuration**: Configurable via the `--log-level=<level>` CLI flag or `MCP_LOG_LEVEL` environment variable.
+- **Timing-Aware Precedence**:
+  - *Import-Time / Static Initialization*: `MCP_LOG_LEVEL` > default (`info`).
+  - *Post-CLI-Parse*: `--log-level` > `MCP_LOG_LEVEL` > default (`info`).
+- **Initialization Note**: The CLI `--log-level` flag cannot retroactively suppress warnings emitted during static module loading prior to CLI option parsing; use `MCP_LOG_LEVEL` when suppression of import-time warnings is required.
+- **Stdio Protocol Purity**: In stdio transport mode, `stdout` is 100% reserved for MCP JSON-RPC protocol framing; zero operational logs enter `stdout`.
+- **User Diagnostics**: CLI argument validation errors, usage help, and fatal process crashes remain formatted human-readable text on `stderr` and are not suppressed by `off`.
+- **Privacy Policy**: Operational logs never intentionally record tool argument payloads, tool results, file bodies, authentication headers, raw request bodies, or full network URLs. Error stack traces are only included when the active log threshold is explicitly configured to `debug`.
+
+---
+
 ## Environment Variables
 
 See [`.env.example`](.env.example) for a ready-to-use template containing all supported environment variables.
@@ -575,6 +591,7 @@ See [`.env.example`](.env.example) for a ready-to-use template containing all su
 | :--- | :--- | :--- | :--- |
 | `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
+| `MCP_LOG_LEVEL` | `string` | `info` | Operational log level override (`debug`, `info`, `warn`, `error`, `off`) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
 | `MCP_WORKSPACE_MAX_WRITE_BYTES` | `number` | `1048576` | Operator workspace write size cap in bytes override (1 to 5242880) |
 | `MCP_WORKSPACE_MAX_RESOURCE_BYTES` | `number` | `1048576` | Operator workspace resource read size cap in bytes override (1 to 5242880) |

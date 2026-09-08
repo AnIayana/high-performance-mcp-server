@@ -73,7 +73,7 @@ export class CacheStore {
         return parsed;
       }
       log("warn", "invalid_cache_max_entries_override", {
-        provided: raw,
+        variable: "MCP_CACHE_MAX_ENTRIES",
         message: "MCP_CACHE_MAX_ENTRIES must be an integer between 1 and 10000. Using default.",
       });
     }
@@ -88,7 +88,7 @@ export class CacheStore {
         return parsed;
       }
       log("warn", "invalid_cache_ttl_override", {
-        provided: raw,
+        variable: "MCP_CACHE_TTL_MS",
         message: "MCP_CACHE_TTL_MS must be an integer between 1000 and 86400000. Using default.",
       });
     }

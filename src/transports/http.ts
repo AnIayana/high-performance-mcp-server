@@ -13,6 +13,7 @@ import type { NetworkOperatorPolicy } from "../network/operator-policy.js";
 import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
 import { createServer } from "../server.js";
 import { closeWorkerPool } from "../workers/pool.js";
+import { log } from "../core/logger.js";
 
 const HEALTH_BODY = '{"status":"ok"}';
 const HEALTH_CONTENT_LENGTH = Buffer.byteLength(HEALTH_BODY);
@@ -158,20 +159,28 @@ export async function startHttpTransport(
     networkCachePolicy,
     workspacePolicy
   );
-  console.error(`[MCP HTTP] Listening on http://127.0.0.1:${instance.port}/mcp (profile: ${profile})`);
+  log("info", "http_listening", {
+    host: "127.0.0.1",
+    port: instance.port,
+    profile,
+  });
 
   let isShuttingDown = false;
   const shutdown = async (signal: string) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    console.error(`\n[MCP HTTP] Received ${signal}, closing server gracefully...`);
+    log("info", "http_shutdown_requested", {
+      signal,
+    });
 
     try {
       await instance.close();
-      console.error("[MCP HTTP] Server and Worker Pool closed cleanly.");
+      log("info", "http_server_closed", {});
       process.exit(0);
     } catch (err) {
-      console.error(`[MCP HTTP] Error during shutdown: ${err instanceof Error ? err.message : String(err)}`);
+      log("error", "http_shutdown_error", {
+        error: err,
+      });
       process.exit(1);
     }
   };
