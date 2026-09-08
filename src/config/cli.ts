@@ -154,6 +154,7 @@ export function getHelpText(): string {
     "  all              Enables all registered tool categories (safe, workspace, workspace_write, network, diagnostics, benchmark, admin).",
     "",
     "Environment Variables:",
+    "  MCP_TRANSPORT                  Transport protocol override (stdio|http, default: stdio)",
     "  MCP_PROFILE                    Default tool profile override (safe|workspace|workspace_write|network|diagnostics|benchmark|admin|all)",
     "  PORT                           Default HTTP port override (e.g. 3000)",
     "  MCP_LOG_LEVEL                  Operational log level override (debug|info|warn|error|off, default: info)",
@@ -227,7 +228,8 @@ export function parseCliArgs(
   args: readonly string[] = [],
   env: NodeJS.ProcessEnv = process.env
 ): ParsedCliConfig {
-  let transport: "stdio" | "http" = "stdio";
+  let cliTransport: ("stdio" | "http") | undefined;
+  let envTransport: ("stdio" | "http") | undefined;
   let port = 3000;
   let profileArg: string | undefined;
   let action: CliAction = "start";
@@ -276,7 +278,7 @@ export function parseCliArgs(
 
   const errorResult = (errorMessage: string): ParsedCliConfig => ({
     action: action === "list-tools" ? "list-tools" : "start",
-    transport,
+    transport: cliTransport ?? envTransport ?? "stdio",
     port,
     profile: DEFAULT_TOOL_PROFILE,
     roots: [],
@@ -290,7 +292,7 @@ export function parseCliArgs(
   if (args.includes("--help") || args.includes("-h")) {
     return {
       action: "help",
-      transport,
+      transport: "stdio",
       port,
       profile: DEFAULT_TOOL_PROFILE,
       roots: [],
@@ -302,7 +304,7 @@ export function parseCliArgs(
   if (args.includes("--version") || args.includes("-v")) {
     return {
       action: "version",
-      transport,
+      transport: "stdio",
       port,
       profile: DEFAULT_TOOL_PROFILE,
       roots: [],
@@ -313,6 +315,21 @@ export function parseCliArgs(
   }
 
   // 2. Parse environment variables first
+  if (env.MCP_TRANSPORT !== undefined) {
+    const rawTransport = env.MCP_TRANSPORT;
+    const trimmed = rawTransport.trim();
+    if (trimmed.length > 0) {
+      const lower = trimmed.toLowerCase();
+      if (lower === "stdio" || lower === "http") {
+        envTransport = lower;
+      } else {
+        return errorResult(
+          `Invalid MCP_TRANSPORT environment variable: "${rawTransport}". Supported transports: stdio, http`
+        );
+      }
+    }
+  }
+
   if (env.PORT !== undefined && env.PORT.trim().length > 0) {
     const parsedPort = parseStrictPort(env.PORT);
     if (parsedPort === null) {
@@ -619,7 +636,7 @@ export function parseCliArgs(
       }
       const value = optValue.trim().toLowerCase();
       if (value === "stdio" || value === "http") {
-        transport = value;
+        cliTransport = value;
       } else {
         return errorResult(
           `Invalid transport option: "${value}". Supported transports: stdio, http`
@@ -955,6 +972,8 @@ export function parseCliArgs(
       "Workspace profile requires at least one allowed root. Use --root=<path> or MCP_ROOTS_JSON."
     );
   }
+
+  const transport: "stdio" | "http" = cliTransport ?? envTransport ?? "stdio";
 
   return {
     action,

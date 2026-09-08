@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { execSync, spawn, spawnSync } from "node:child_process";
+import net from "node:net";
+import path from "node:path";
+import process from "node:process";
 import { test } from "node:test";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import {
   getHelpText,
   getPackageVersion,
@@ -584,4 +591,207 @@ test("CLI Parser — getHelpText includes --log-level and MCP_LOG_LEVEL", () => 
   assert.ok(help.includes("MCP_LOG_LEVEL"));
 });
 
+test("CLI Parser — MCP_TRANSPORT environment variable and precedence", () => {
+  // A. unset: no --transport, no MCP_TRANSPORT => stdio
+  const unsetCfg = parseCliArgs([], {});
+  assert.equal(unsetCfg.error, undefined);
+  assert.equal(unsetCfg.transport, "stdio");
 
+  // B. env stdio: MCP_TRANSPORT=stdio => stdio
+  const stdioEnvCfg = parseCliArgs([], { MCP_TRANSPORT: "stdio" });
+  assert.equal(stdioEnvCfg.error, undefined);
+  assert.equal(stdioEnvCfg.transport, "stdio");
+
+  // C. env http: MCP_TRANSPORT=http => http
+  const httpEnvCfg = parseCliArgs([], { MCP_TRANSPORT: "http" });
+  assert.equal(httpEnvCfg.error, undefined);
+  assert.equal(httpEnvCfg.transport, "http");
+
+  // D. trim and case-insensitivity: MCP_TRANSPORT="  HTTP  " => http, "  STDIO  " => stdio
+  const trimHttpCfg = parseCliArgs([], { MCP_TRANSPORT: "  HTTP  " });
+  assert.equal(trimHttpCfg.error, undefined);
+  assert.equal(trimHttpCfg.transport, "http");
+
+  const trimStdioCfg = parseCliArgs([], { MCP_TRANSPORT: "  STDIO  " });
+  assert.equal(trimStdioCfg.error, undefined);
+  assert.equal(trimStdioCfg.transport, "stdio");
+
+  // E. empty: MCP_TRANSPORT="" => stdio (treated as unset)
+  const emptyEnvCfg = parseCliArgs([], { MCP_TRANSPORT: "" });
+  assert.equal(emptyEnvCfg.error, undefined);
+  assert.equal(emptyEnvCfg.transport, "stdio");
+
+  // F. whitespace-only: MCP_TRANSPORT="   " => stdio (treated as unset)
+  const wsEnvCfg = parseCliArgs([], { MCP_TRANSPORT: "   " });
+  assert.equal(wsEnvCfg.error, undefined);
+  assert.equal(wsEnvCfg.transport, "stdio");
+
+  // G. CLI override: MCP_TRANSPORT=stdio + --transport=http => http
+  const cliOverrideCfg = parseCliArgs(["--transport=http"], { MCP_TRANSPORT: "stdio" });
+  assert.equal(cliOverrideCfg.error, undefined);
+  assert.equal(cliOverrideCfg.transport, "http");
+
+  // H. reverse CLI override: MCP_TRANSPORT=http + --transport=stdio => stdio
+  const revOverrideCfg = parseCliArgs(["--transport=stdio"], { MCP_TRANSPORT: "http" });
+  assert.equal(revOverrideCfg.error, undefined);
+  assert.equal(revOverrideCfg.transport, "stdio");
+
+  // CLI space-separated argument override
+  const spaceOverrideCfg = parseCliArgs(["--transport", "http"], { MCP_TRANSPORT: "stdio" });
+  assert.equal(spaceOverrideCfg.error, undefined);
+  assert.equal(spaceOverrideCfg.transport, "http");
+});
+
+test("CLI Parser — invalid MCP_TRANSPORT environment variable fails fast", () => {
+  // I. invalid env: human-readable error with env name and supported transports
+  const invalidEnvRes = parseCliArgs([], { MCP_TRANSPORT: "websocket" });
+  assert.ok(invalidEnvRes.error?.includes("Invalid MCP_TRANSPORT environment variable:"));
+  assert.ok(invalidEnvRes.error?.includes('"websocket"'));
+  assert.ok(invalidEnvRes.error?.includes("Supported transports: stdio, http"));
+
+  // J. invalid CLI: preserves existing CLI validation error
+  const invalidCliRes = parseCliArgs(["--transport=tcp"], {});
+  assert.ok(invalidCliRes.error?.includes("Invalid transport option:"));
+  assert.ok(invalidCliRes.error?.includes('"tcp"'));
+  assert.ok(invalidCliRes.error?.includes("Supported transports: stdio, http"));
+
+  // Duplicate CLI flag fails fast
+  const dupCliRes = parseCliArgs(["--transport=stdio", "--transport=http"], {});
+  assert.ok(dupCliRes.error?.includes('Duplicate option specified: "--transport"'));
+
+  // Missing CLI option value fails fast
+  const missingCliRes = parseCliArgs(["--transport"], {});
+  assert.ok(missingCliRes.error?.includes('Missing value for option "--transport"'));
+});
+
+test("CLI Parser — getHelpText includes MCP_TRANSPORT", () => {
+  const help = getHelpText();
+  assert.ok(help.includes("MCP_TRANSPORT"));
+  assert.ok(help.includes("--transport=<stdio|http>"));
+});
+
+test("CLI Subprocess — MCP_TRANSPORT runtime behavior and precedence", async () => {
+  const rootDir = path.resolve(import.meta.dirname, "..");
+  const distCliPath = path.resolve(rootDir, "dist/cli.js");
+  if (!fs.existsSync(distCliPath)) {
+    execSync("npm run build", { cwd: rootDir, stdio: "pipe" });
+  }
+
+  // 1. Invalid MCP_TRANSPORT produces exit code 1 and human-readable stderr
+  const invalidRes = spawnSync(process.execPath, [distCliPath], {
+    env: { ...process.env, MCP_TRANSPORT: "invalid_val" },
+    encoding: "utf-8",
+  });
+  assert.equal(invalidRes.status, 1);
+  assert.ok(
+    invalidRes.stderr.includes(
+      '[Error] Invalid MCP_TRANSPORT environment variable: "invalid_val". Supported transports: stdio, http'
+    )
+  );
+
+  // 2. Empty/whitespace MCP_TRANSPORT defaults to stdio cleanly with actual MCP session
+  const stdioTransportEmpty = new StdioClientTransport({
+    command: process.execPath,
+    args: [distCliPath],
+    env: { ...process.env, MCP_TRANSPORT: "   " },
+    stderr: "pipe",
+  });
+  const clientEmpty = new Client({ name: "test-client-empty", version: "1.0.0" });
+  await clientEmpty.connect(stdioTransportEmpty);
+  const pingEmpty = await clientEmpty.callTool({ name: "ping", arguments: {} });
+  assert.ok(!pingEmpty.isError);
+  assert.deepEqual(pingEmpty.content, [{ type: "text", text: "pong" }]);
+  await clientEmpty.close();
+
+  // 3. CLI --transport=stdio overrides MCP_TRANSPORT=http via actual stdio MCP session
+  const stdioTransportOverride = new StdioClientTransport({
+    command: process.execPath,
+    args: [distCliPath, "--transport=stdio"],
+    env: { ...process.env, MCP_TRANSPORT: "http" },
+    stderr: "pipe",
+  });
+  const clientOverride = new Client({ name: "test-client-override", version: "1.0.0" });
+  await clientOverride.connect(stdioTransportOverride);
+  const pingOverride = await clientOverride.callTool({ name: "ping", arguments: {} });
+  assert.ok(!pingOverride.isError);
+  assert.deepEqual(pingOverride.content, [{ type: "text", text: "pong" }]);
+  await clientOverride.close();
+
+  // 4. CLI --transport=http overrides MCP_TRANSPORT=stdio via actual HTTP server and /healthz probe
+  const testPort = await new Promise<number>((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      if (addr && typeof addr === "object") {
+        const port = addr.port;
+        srv.close(() => resolve(port));
+      } else {
+        srv.close(() => reject(new Error("Could not acquire ephemeral port")));
+      }
+    });
+    srv.on("error", reject);
+  });
+
+  const httpChild = spawn(
+    process.execPath,
+    [distCliPath, "--transport=http", `--port=${testPort}`],
+    {
+      env: { ...process.env, MCP_TRANSPORT: "stdio" },
+      stdio: ["ignore", "pipe", "pipe"],
+    }
+  );
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timed out waiting for HTTP server to start"));
+      }, 10000);
+
+      httpChild.stderr.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
+        for (const line of text.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed.event === "http_listening") {
+              clearTimeout(timeout);
+              resolve();
+              return;
+            }
+          } catch {
+            // Ignore non-JSON
+          }
+        }
+      });
+
+      httpChild.on("error", (err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+
+      httpChild.on("exit", (code) => {
+        clearTimeout(timeout);
+        reject(new Error(`Server exited prematurely with code ${code}`));
+      });
+    });
+
+    const healthRes = await fetch(`http://127.0.0.1:${testPort}/healthz`);
+    assert.equal(healthRes.status, 200);
+    const healthBody = await healthRes.text();
+    assert.equal(healthBody, '{"status":"ok"}');
+  } finally {
+    await new Promise<void>((resolve) => {
+      httpChild.on("exit", () => resolve());
+      httpChild.kill("SIGTERM");
+      setTimeout(() => {
+        try {
+          httpChild.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+        resolve();
+      }, 3000);
+    });
+  }
+});

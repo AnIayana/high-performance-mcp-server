@@ -4,6 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -408,6 +410,226 @@ if (roots.length > 0) {
       assert.ok(stderr.includes("Invalid log level option"), "Stderr must contain validation error");
     }
     console.log(`[Smoke Test] Installed binary log-level options validated successfully.`);
+
+    // 14. Test installed binary with MCP_TRANSPORT environment variable
+    console.log(`[Smoke Test] Testing installed binary with MCP_TRANSPORT=http and /healthz probe...`);
+    const envTestPort = await new Promise<number>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const addr = srv.address();
+        if (addr && typeof addr === "object") {
+          const port = addr.port;
+          srv.close(() => resolve(port));
+        } else {
+          srv.close(() => reject(new Error("Could not acquire ephemeral port")));
+        }
+      });
+      srv.on("error", reject);
+    });
+
+    const envHttpChild = spawn(
+      process.execPath,
+      [cliScriptPath, `--port=${envTestPort}`],
+      {
+        cwd: tempDir,
+        env: { ...process.env, MCP_TRANSPORT: "http" },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Timed out waiting for HTTP server via MCP_TRANSPORT=http to start"));
+        }, 10000);
+
+        envHttpChild.stderr.on("data", (chunk: Buffer) => {
+          const text = chunk.toString();
+          for (const line of text.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.event === "http_listening") {
+                clearTimeout(timeout);
+                resolve();
+                return;
+              }
+            } catch {
+              // Ignore non-JSON lines
+            }
+          }
+        });
+
+        envHttpChild.on("error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+
+        envHttpChild.on("exit", (code) => {
+          clearTimeout(timeout);
+          reject(new Error(`Server child exited prematurely with code ${code}`));
+        });
+      });
+
+      // Probe GET /healthz on MCP_TRANSPORT=http instance
+      const envHealthRes = await fetch(`http://127.0.0.1:${envTestPort}/healthz`);
+      assert.equal(envHealthRes.status, 200, "Packed CLI via MCP_TRANSPORT=http /healthz must return 200");
+      const envHealthBody = await envHealthRes.text();
+      assert.equal(envHealthBody, '{"status":"ok"}', "Packed CLI /healthz body must match");
+    } finally {
+      await new Promise<void>((resolve) => {
+        envHttpChild.on("exit", () => resolve());
+        envHttpChild.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            envHttpChild.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+          resolve();
+        }, 3000);
+      });
+    }
+    console.log(`[Smoke Test] Installed binary MCP_TRANSPORT=http /healthz validated successfully.`);
+
+    // Test installed binary with MCP_TRANSPORT=stdio actual stdio MCP session
+    console.log(`[Smoke Test] Testing installed binary with MCP_TRANSPORT=stdio actual stdio MCP session...`);
+    const stdioTransportEnv = new StdioClientTransport({
+      command: process.execPath,
+      args: [cliScriptPath],
+      env: { ...process.env, MCP_TRANSPORT: "stdio" },
+      stderr: "pipe",
+    });
+    const clientEnv = new Client({ name: "smoke-client-env", version: "1.0.0" });
+    await clientEnv.connect(stdioTransportEnv);
+    const pingEnvRes = await clientEnv.callTool({ name: "ping", arguments: {} });
+    assert.ok(!pingEnvRes.isError, "MCP_TRANSPORT=stdio ping call must succeed");
+    assert.deepEqual(pingEnvRes.content, [{ type: "text", text: "pong" }], "MCP_TRANSPORT=stdio ping response must match");
+    await clientEnv.close();
+    console.log(`[Smoke Test] Installed binary MCP_TRANSPORT=stdio actual stdio MCP session validated successfully.`);
+
+    // Test CLI --transport=stdio overrides MCP_TRANSPORT=http via actual stdio MCP session
+    console.log(`[Smoke Test] Testing CLI --transport=stdio overrides MCP_TRANSPORT=http via actual stdio MCP session...`);
+    const stdioTransportOverride = new StdioClientTransport({
+      command: process.execPath,
+      args: [cliScriptPath, "--transport=stdio"],
+      env: { ...process.env, MCP_TRANSPORT: "http" },
+      stderr: "pipe",
+    });
+    const clientOverride = new Client({ name: "smoke-client-override", version: "1.0.0" });
+    await clientOverride.connect(stdioTransportOverride);
+    const pingOverrideRes = await clientOverride.callTool({ name: "ping", arguments: {} });
+    assert.ok(!pingOverrideRes.isError, "CLI --transport=stdio overriding MCP_TRANSPORT=http ping must succeed");
+    assert.deepEqual(pingOverrideRes.content, [{ type: "text", text: "pong" }], "ping response must match");
+    await clientOverride.close();
+    console.log(`[Smoke Test] Installed binary CLI --transport=stdio overriding MCP_TRANSPORT=http stdio session validated successfully.`);
+
+    // Test CLI --transport=http overrides MCP_TRANSPORT=stdio via actual HTTP server and /healthz probe
+    console.log(`[Smoke Test] Testing CLI --transport=http overrides MCP_TRANSPORT=stdio via actual /healthz probe...`);
+    const cliOverrideHttpPort = await new Promise<number>((resolve, reject) => {
+      const srv = net.createServer();
+      srv.listen(0, "127.0.0.1", () => {
+        const addr = srv.address();
+        if (addr && typeof addr === "object") {
+          const port = addr.port;
+          srv.close(() => resolve(port));
+        } else {
+          srv.close(() => reject(new Error("Could not acquire ephemeral port")));
+        }
+      });
+      srv.on("error", reject);
+    });
+
+    const cliOverrideHttpChild = spawn(
+      process.execPath,
+      [cliScriptPath, "--transport=http", `--port=${cliOverrideHttpPort}`],
+      {
+        cwd: tempDir,
+        env: { ...process.env, MCP_TRANSPORT: "stdio" },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Timed out waiting for HTTP server via CLI override --transport=http to start"));
+        }, 10000);
+
+        cliOverrideHttpChild.stderr.on("data", (chunk: Buffer) => {
+          const text = chunk.toString();
+          for (const line of text.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.event === "http_listening") {
+                clearTimeout(timeout);
+                resolve();
+                return;
+              }
+            } catch {
+              // Ignore non-JSON lines
+            }
+          }
+        });
+
+        cliOverrideHttpChild.on("error", (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
+
+        cliOverrideHttpChild.on("exit", (code) => {
+          clearTimeout(timeout);
+          reject(new Error(`Server child exited prematurely with code ${code}`));
+        });
+      });
+
+      const cliOverrideHealthRes = await fetch(`http://127.0.0.1:${cliOverrideHttpPort}/healthz`);
+      assert.equal(cliOverrideHealthRes.status, 200, "Packed CLI via --transport=http overriding MCP_TRANSPORT=stdio /healthz must return 200");
+      const cliOverrideHealthBody = await cliOverrideHealthRes.text();
+      assert.equal(cliOverrideHealthBody, '{"status":"ok"}', "Packed CLI /healthz body must match");
+    } finally {
+      await new Promise<void>((resolve) => {
+        cliOverrideHttpChild.on("exit", () => resolve());
+        cliOverrideHttpChild.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            cliOverrideHttpChild.kill("SIGKILL");
+          } catch {
+            // ignore
+          }
+          resolve();
+        }, 3000);
+      });
+    }
+    console.log(`[Smoke Test] Installed binary CLI --transport=http overriding MCP_TRANSPORT=stdio HTTP /healthz validated successfully.`);
+
+    // Test invalid MCP_TRANSPORT in installed binary
+    console.log(`[Smoke Test] Testing installed binary with invalid MCP_TRANSPORT...`);
+    try {
+      execSync(`"${installedBinPath}" --list-tools`, {
+        cwd: tempDir,
+        env: { ...process.env, MCP_TRANSPORT: "invalid_transport" },
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      assert.fail("Should have failed on invalid MCP_TRANSPORT");
+    } catch (err: unknown) {
+      const e = err as { status?: number; stderr?: string };
+      assert.notEqual(e.status, 0, "Must exit non-zero on invalid MCP_TRANSPORT");
+      const stderr = e.stderr ? e.stderr.toString() : "";
+      assert.ok(
+        stderr.includes("Invalid MCP_TRANSPORT environment variable"),
+        "Stderr must contain invalid MCP_TRANSPORT error"
+      );
+      assert.ok(
+        stderr.includes("Supported transports: stdio, http"),
+        "Stderr must specify supported transports"
+      );
+    }
+    console.log(`[Smoke Test] Installed binary invalid MCP_TRANSPORT validated successfully.`);
   } finally {
     // 11. Cleanup
     try {
