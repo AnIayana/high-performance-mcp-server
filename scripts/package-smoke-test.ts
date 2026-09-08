@@ -318,9 +318,19 @@ if (roots.length > 0) {
 
         httpChild.stderr.on("data", (chunk: Buffer) => {
           const text = chunk.toString();
-          if (text.includes("[MCP HTTP] Listening on")) {
-            clearTimeout(timeout);
-            resolve();
+          for (const line of text.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.event === "http_listening") {
+                clearTimeout(timeout);
+                resolve();
+                return;
+              }
+            } catch {
+              // Ignore non-JSON lines
+            }
           }
         });
 
@@ -373,6 +383,31 @@ if (roots.length > 0) {
       });
     }
     console.log(`[Smoke Test] Installed binary HTTP /healthz validated successfully.`);
+
+    // 13. Test installed binary with --log-level options
+    console.log(`[Smoke Test] Testing installed binary with --log-level=off...`);
+    const offOutput = execSync(`"${installedBinPath}" --log-level=off --list-tools`, {
+      cwd: tempDir,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    assert.ok(offOutput.includes("Profile: safe"), "Packed CLI with --log-level=off must succeed");
+
+    console.log(`[Smoke Test] Testing installed binary with invalid --log-level...`);
+    try {
+      execSync(`"${installedBinPath}" --log-level=invalid`, {
+        cwd: tempDir,
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      assert.fail("Should have failed on invalid --log-level");
+    } catch (err: unknown) {
+      const e = err as { status?: number; stderr?: string };
+      assert.notEqual(e.status, 0, "Must exit non-zero on invalid --log-level");
+      const stderr = e.stderr ? e.stderr.toString() : "";
+      assert.ok(stderr.includes("Invalid log level option"), "Stderr must contain validation error");
+    }
+    console.log(`[Smoke Test] Installed binary log-level options validated successfully.`);
   } finally {
     // 11. Cleanup
     try {

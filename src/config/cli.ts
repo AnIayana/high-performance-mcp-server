@@ -43,6 +43,15 @@ import {
   type ToolProfile,
   VALID_TOOL_PROFILES,
 } from "./tool-profile.js";
+import type { LogThreshold } from "../core/logger.js";
+
+export const VALID_LOG_THRESHOLDS: readonly LogThreshold[] = [
+  "debug",
+  "info",
+  "warn",
+  "error",
+  "off",
+] as const;
 
 export type CliAction = "start" | "help" | "version" | "list-tools";
 
@@ -55,6 +64,7 @@ export interface ParsedCliConfig {
   workspacePolicy: WorkspaceOperatorPolicy;
   networkPolicy: NetworkOperatorPolicy;
   networkCachePolicy: NetworkCachePolicy;
+  logLevel?: LogThreshold;
   error?: string;
 }
 
@@ -128,6 +138,7 @@ export function getHelpText(): string {
     "  --network-cache-max-size-bytes=<n> Logical max cache payload size in bytes (1024-67108864, default: 16777216)",
     "  --network-cache-max-entries=<n> Max cache entry count (1-512, default: 128)",
     "  --network-cache-ttl-ms=<n>     Max cache retention TTL in ms (1000-3600000, default: 300000)",
+    "  --log-level=<level>            Operational log level (debug|info|warn|error|off, default: info)",
     "  --list-tools                   Display available tools for the active profile and exit",
     "  --help, -h                     Show this help message and exit",
     "  --version, -v                  Show version and exit",
@@ -145,6 +156,7 @@ export function getHelpText(): string {
     "Environment Variables:",
     "  MCP_PROFILE                    Default tool profile override (safe|workspace|workspace_write|network|diagnostics|benchmark|admin|all)",
     "  PORT                           Default HTTP port override (e.g. 3000)",
+    "  MCP_LOG_LEVEL                  Operational log level override (debug|info|warn|error|off, default: info)",
     "  MCP_ROOTS_JSON                 JSON array of allowlisted workspace root paths (e.g. [\"/path/to/project\"])",
     "  MCP_WORKSPACE_MAX_WRITE_BYTES  Operator workspace write size cap in bytes override (1-5242880)",
     "  MCP_WORKSPACE_MAX_RESOURCE_BYTES Operator workspace resource read size cap in bytes override (1-5242880)",
@@ -525,6 +537,8 @@ export function parseCliArgs(
   let seenCacheMaxSize = false;
   let seenCacheMaxEntries = false;
   let seenCacheTtl = false;
+  let seenLogLevel = false;
+  let cliLogLevel: LogThreshold | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -651,6 +665,33 @@ export function parseCliArgs(
       } else {
         return errorResult(
           `Invalid tool profile: "${value}". Valid profiles: ${VALID_TOOL_PROFILES.join(", ")}`
+        );
+      }
+    } else if (optName === "--log-level") {
+      if (seenLogLevel) {
+        return errorResult(
+          `Duplicate option specified: "--log-level". This option may only be specified once.`
+        );
+      }
+      seenLogLevel = true;
+      if (optValue === undefined) {
+        if (i + 1 >= args.length || args[i + 1]!.startsWith("-")) {
+          return errorResult(`Missing value for option "--log-level".`);
+        }
+        optValue = args[++i]!;
+      }
+      const value = optValue.trim().toLowerCase();
+      if (
+        value === "debug" ||
+        value === "info" ||
+        value === "warn" ||
+        value === "error" ||
+        value === "off"
+      ) {
+        cliLogLevel = value;
+      } else {
+        return errorResult(
+          `Invalid log level option: "${optValue}". Valid levels: debug, info, warn, error, off`
         );
       }
     } else if (optName === "--root") {
@@ -924,5 +965,6 @@ export function parseCliArgs(
     workspacePolicy,
     networkPolicy,
     networkCachePolicy,
+    ...(cliLogLevel !== undefined ? { logLevel: cliLogLevel } : {}),
   };
 }
