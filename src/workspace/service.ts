@@ -34,6 +34,12 @@ export interface FileInfoResult {
   isSymlink: boolean;
 }
 
+export interface ReadTextFileOptions {
+  readonly maxBytes?: number;
+  readonly startLine?: number;
+  readonly endLine?: number;
+}
+
 export interface ReadTextFileResult {
   rootId: string;
   path: string;
@@ -43,6 +49,9 @@ export interface ReadTextFileResult {
   truncated: boolean;
   encoding: "utf-8";
   sha256?: string;
+  startLine?: number;
+  endLine?: number;
+  totalLines?: number;
 }
 
 /**
@@ -250,14 +259,75 @@ export async function getFileInfoService(
 }
 
 /**
- * Reads a text file within an allowed workspace root with binary detection and size limits.
+ * Splits UTF-8 text into 1-based lines while preserving original line endings (\n or \r\n).
+ */
+function splitLinesPreservingEndings(text: string): string[] {
+  if (text.length === 0) return [];
+  const lines: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) {
+      lines.push(text.slice(start, i + 1));
+      start = i + 1;
+    }
+  }
+  if (start < text.length) {
+    lines.push(text.slice(start));
+  }
+  return lines;
+}
+
+/**
+ * Strips any incomplete trailing multi-byte UTF-8 sequence when slicing by byte limit.
+ */
+function trimIncompleteUtf8Slice(buf: Buffer): Buffer {
+  const len = buf.length;
+  if (len === 0) return buf;
+  for (let i = 1; i <= 4 && i <= len; i++) {
+    const byte = buf[len - i]!;
+    if ((byte & 0x80) === 0) return buf;
+    if ((byte & 0xe0) === 0xc0) return i < 2 ? buf.subarray(0, len - i) : buf;
+    if ((byte & 0xf0) === 0xe0) return i < 3 ? buf.subarray(0, len - i) : buf;
+    if ((byte & 0xf8) === 0xf0) return i < 4 ? buf.subarray(0, len - i) : buf;
+  }
+  return buf;
+}
+
+/**
+ * Reads a text file within an allowed workspace root with binary detection, size limits, and optional 1-based line range slicing.
  */
 export async function readTextFileService(
   workspaceConfig: WorkspaceConfig | undefined,
   rootId: string,
   relativePath: string,
-  maxBytes: number = DEFAULT_TEXT_READ_BYTES
+  maxBytesOrOptions: number | ReadTextFileOptions = DEFAULT_TEXT_READ_BYTES
 ): Promise<ReadTextFileResult> {
+  const options: ReadTextFileOptions =
+    typeof maxBytesOrOptions === "number"
+      ? { maxBytes: maxBytesOrOptions }
+      : maxBytesOrOptions ?? {};
+
+  const maxBytes = options.maxBytes ?? DEFAULT_TEXT_READ_BYTES;
+  const { startLine, endLine } = options;
+
+  if (startLine !== undefined) {
+    if (typeof startLine !== "number" || !Number.isSafeInteger(startLine) || startLine < 1) {
+      throw new Error("Invalid startLine parameter: Must be a positive integer (>= 1).");
+    }
+  }
+
+  if (endLine !== undefined) {
+    if (typeof endLine !== "number" || !Number.isSafeInteger(endLine) || endLine < 1) {
+      throw new Error("Invalid endLine parameter: Must be a positive integer (>= 1).");
+    }
+  }
+
+  if (startLine !== undefined && endLine !== undefined && endLine < startLine) {
+    throw new Error(
+      `Invalid line range: endLine (${endLine}) cannot be less than startLine (${startLine}).`
+    );
+  }
+
   const resolved = await resolveExistingPathWithinRoot(workspaceConfig, rootId, relativePath);
 
   if (!resolved.isFile) {
@@ -267,31 +337,101 @@ export async function readTextFileService(
   }
 
   const requestedLimit = Math.max(1, Math.min(MAX_TEXT_READ_BYTES, Math.floor(maxBytes)));
-  const bufferToRead = Buffer.alloc(requestedLimit + 1);
+  const hasLineRange = startLine !== undefined || endLine !== undefined;
 
+  if (!hasLineRange) {
+    const bufferToRead = Buffer.alloc(requestedLimit + 1);
+
+    const fileHandle = await fs.open(resolved.resolvedPath, "r");
+    let bytesRead = 0;
+    try {
+      const readResult = await fileHandle.read(bufferToRead, 0, requestedLimit + 1, 0);
+      bytesRead = readResult.bytesRead;
+    } finally {
+      await fileHandle.close();
+    }
+
+    const slice = bufferToRead.subarray(0, bytesRead);
+
+    // Binary detection: check for NUL bytes in read content
+    if (slice.includes(0)) {
+      throw new Error(
+        `File appears to be binary. Binary reads are not supported by read_text_file: "${relativePath}".`
+      );
+    }
+
+    const truncated = resolved.stats.size > requestedLimit || bytesRead > requestedLimit;
+    const actualBytesCount = Math.min(bytesRead, requestedLimit);
+    const text = slice.subarray(0, actualBytesCount).toString("utf8");
+    const sha256 = !truncated
+      ? crypto.createHash("sha256").update(slice.subarray(0, actualBytesCount)).digest("hex")
+      : undefined;
+
+    return {
+      rootId: resolved.root.id,
+      path: resolved.relativeToRoot,
+      text,
+      sizeBytes: resolved.stats.size,
+      bytesRead: actualBytesCount,
+      truncated,
+      encoding: "utf-8",
+      sha256,
+    };
+  }
+
+  // Line-range mode: read up to MAX_TEXT_READ_BYTES + 1 so target lines anywhere within the 1 MiB ceiling can be sliced
+  const bufferToRead = Buffer.alloc(MAX_TEXT_READ_BYTES + 1);
   const fileHandle = await fs.open(resolved.resolvedPath, "r");
   let bytesRead = 0;
   try {
-    const readResult = await fileHandle.read(bufferToRead, 0, requestedLimit + 1, 0);
+    const readResult = await fileHandle.read(bufferToRead, 0, MAX_TEXT_READ_BYTES + 1, 0);
     bytesRead = readResult.bytesRead;
   } finally {
     await fileHandle.close();
   }
 
-  const slice = bufferToRead.subarray(0, bytesRead);
+  const rawSlice = bufferToRead.subarray(0, bytesRead);
 
   // Binary detection: check for NUL bytes in read content
-  if (slice.includes(0)) {
+  if (rawSlice.includes(0)) {
     throw new Error(
       `File appears to be binary. Binary reads are not supported by read_text_file: "${relativePath}".`
     );
   }
 
-  const truncated = resolved.stats.size > requestedLimit || bytesRead > requestedLimit;
-  const actualBytesCount = Math.min(bytesRead, requestedLimit);
-  const text = slice.subarray(0, actualBytesCount).toString("utf8");
+  const fileExceedsHardCap =
+    resolved.stats.size > MAX_TEXT_READ_BYTES || bytesRead > MAX_TEXT_READ_BYTES;
+  const fullSlice = trimIncompleteUtf8Slice(
+    rawSlice.subarray(0, Math.min(bytesRead, MAX_TEXT_READ_BYTES))
+  );
+  const fullText = fullSlice.toString("utf8");
+  const lines = splitLinesPreservingEndings(fullText);
+  const totalLines = lines.length;
+
+  const effectiveStartLine = startLine ?? 1;
+  const effectiveEndLine = endLine !== undefined ? Math.min(endLine, totalLines) : totalLines;
+
+  const selectedLines =
+    effectiveStartLine <= totalLines
+      ? lines.slice(effectiveStartLine - 1, effectiveEndLine)
+      : [];
+  const joinedText = selectedLines.join("");
+  const joinedBuffer = Buffer.from(joinedText, "utf8");
+
+  const byteTruncated = joinedBuffer.byteLength > requestedLimit;
+  const finalBuffer = byteTruncated
+    ? trimIncompleteUtf8Slice(joinedBuffer.subarray(0, requestedLimit))
+    : joinedBuffer;
+  const text = finalBuffer.toString("utf8");
+  const actualBytesCount = finalBuffer.byteLength;
+
+  const isPartialRange =
+    totalLines > 0
+      ? effectiveStartLine > 1 || effectiveEndLine < totalLines
+      : effectiveStartLine > 1;
+  const truncated = fileExceedsHardCap || byteTruncated || isPartialRange;
   const sha256 = !truncated
-    ? crypto.createHash("sha256").update(slice.subarray(0, actualBytesCount)).digest("hex")
+    ? crypto.createHash("sha256").update(fullSlice).digest("hex")
     : undefined;
 
   return {
@@ -303,5 +443,8 @@ export async function readTextFileService(
     truncated,
     encoding: "utf-8",
     sha256,
+    startLine: effectiveStartLine,
+    endLine: effectiveStartLine <= totalLines ? effectiveEndLine : totalLines,
+    totalLines,
   };
 }

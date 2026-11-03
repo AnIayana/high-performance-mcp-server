@@ -225,3 +225,69 @@ test("Workspace Service — listDirectoryService maxDepth recursive traversal an
     fixture.cleanup();
   }
 });
+
+test("Workspace Service — readTextFileService startLine and endLine range slicing", async () => {
+  const fixture = createWorkspaceFixture();
+  try {
+    const multiLineContent = [
+      "line 1: alpha",
+      "line 2: beta",
+      "line 3: gamma",
+      "line 4: delta",
+      "line 5: epsilon",
+      "",
+    ].join("\n");
+    fs.writeFileSync(path.join(fixture.tempDir, "multiline.txt"), multiLineContent, "utf-8");
+
+    // 1. Slice lines 2..4 (partial file -> truncated: true, sha256: undefined)
+    const sliceRes = await readTextFileService(fixture.config, "root-1", "multiline.txt", {
+      startLine: 2,
+      endLine: 4,
+    });
+    assert.equal(sliceRes.text, "line 2: beta\nline 3: gamma\nline 4: delta\n");
+    assert.equal(sliceRes.startLine, 2);
+    assert.equal(sliceRes.endLine, 4);
+    assert.equal(sliceRes.totalLines, 5);
+    assert.equal(sliceRes.truncated, true);
+    assert.equal(sliceRes.sha256, undefined);
+
+    // 2. Full range 1..5 -> truncated: false, sha256 matches full read
+    const fullRead = await readTextFileService(fixture.config, "root-1", "multiline.txt");
+    const fullRange = await readTextFileService(fixture.config, "root-1", "multiline.txt", {
+      startLine: 1,
+      endLine: 5,
+    });
+    assert.equal(fullRange.text, multiLineContent);
+    assert.equal(fullRange.truncated, false);
+    assert.equal(fullRange.sha256, fullRead.sha256);
+    assert.equal(fullRange.startLine, 1);
+    assert.equal(fullRange.endLine, 5);
+    assert.equal(fullRange.totalLines, 5);
+
+    // 3. Out-of-bounds startLine beyond totalLines -> empty text, truncated: true
+    const oobRes = await readTextFileService(fixture.config, "root-1", "multiline.txt", {
+      startLine: 20,
+      endLine: 25,
+    });
+    assert.equal(oobRes.text, "");
+    assert.equal(oobRes.bytesRead, 0);
+    assert.equal(oobRes.startLine, 20);
+    assert.equal(oobRes.endLine, 5);
+    assert.equal(oobRes.totalLines, 5);
+    assert.equal(oobRes.truncated, true);
+    assert.equal(oobRes.sha256, undefined);
+
+    // 4. Invalid range (endLine < startLine) throws error
+    await assert.rejects(
+      async () => {
+        await readTextFileService(fixture.config, "root-1", "multiline.txt", {
+          startLine: 4,
+          endLine: 2,
+        });
+      },
+      /endLine \(2\) cannot be less than startLine \(4\)/
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});

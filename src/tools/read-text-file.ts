@@ -35,6 +35,18 @@ export default function registerReadTextFileTool(
           .describe(
             `Maximum bytes to read (1 to ${MAX_TEXT_READ_BYTES}, default ${DEFAULT_TEXT_READ_BYTES})`
           ),
+        startLine: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Optional 1-based starting line number (inclusive)"),
+        endLine: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Optional 1-based ending line number (inclusive, must be >= startLine)"),
       }),
       outputSchema: z.object({
         rootId: z.string(),
@@ -45,6 +57,9 @@ export default function registerReadTextFileTool(
         truncated: z.boolean(),
         encoding: z.literal("utf-8"),
         sha256: z.string().optional(),
+        startLine: z.number().int().optional(),
+        endLine: z.number().int().optional(),
+        totalLines: z.number().int().optional(),
       }),
     },
     withToolMetrics(toolMeta.name, async (args) => {
@@ -53,7 +68,11 @@ export default function registerReadTextFileTool(
           context?.workspace,
           args.rootId,
           args.path,
-          args.maxBytes ?? DEFAULT_TEXT_READ_BYTES
+          {
+            maxBytes: args.maxBytes ?? DEFAULT_TEXT_READ_BYTES,
+            startLine: args.startLine,
+            endLine: args.endLine,
+          }
         );
         return {
           content: [{ type: "text", text: result.text }],
