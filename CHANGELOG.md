@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-02
+
+### Added
+
+- **Programmatic Node.js Library API (`src/index.ts`)**: Exported a side-effect-free public Node.js entry point (`createServer`, `resolveWorkspaceConfig`, `TOOL_PROFILES`, `DEFAULT_TOOL_PROFILE`, `isValidToolProfile`, `createWorkspaceOperatorPolicy`, `createNetworkOperatorPolicy`, `createNetworkCachePolicy`) with full TypeScript declarations (`dist/index.d.ts`). Supports embedding isolated `McpServer` instances with custom workspace, network egress, and conditional cache operator policies.
+- **Targeted Line Range Reading (`read_text_file`)**: Added optional 1-based inclusive `startLine` and `endLine` parameters (`startLine <= endLine`) and `startLine`, `endLine`, `totalLines` output metadata. Preserves the optimistic concurrency invariant by returning `sha256` strictly when the full file is read without byte truncation or partial line slicing (`truncated: false`).
+- **Non-Mutating Dry-Run Preview Mode (`write_text_file`, `edit_text_file`)**: Added optional `dryRun?: boolean` parameter across `write_text_file` (`create` and `overwrite` modes) and `edit_text_file`. Executes full root boundary, parent path, byte size, UTF-8/NUL, `expectedSha256`, and sequential `expectedOccurrences` validations in memory and returns resulting `sha256`, `previousSha256`, `bytesWritten` (and `editsApplied`) with `dryRun: true` while performing zero disk mutations and bypassing interactive write confirmation prompts.
+- **Streamable HTTP Health Probe (`/healthz`)**: Added a zero-side-effect `GET` / `HEAD` `/healthz` operational liveness endpoint on the loopback HTTP transport (`127.0.0.1`) protected by `localhostHostValidation` and `localhostOriginValidation`.
+- **Opt-In Loopback Observability Dashboard (`--dashboard`, `MCP_DASHBOARD`)**: Added a zero-dependency, read-only local web dashboard (`GET /dashboard` and `GET /dashboard/api/stats`) on the HTTP transport to visualize real-time event-loop delay, tool telemetry, LRU cache hit rates, worker pool status, and active profile/root boundaries without exposing host filesystem paths.
+- **Structured Operational Log Levels (`--log-level`, `MCP_LOG_LEVEL`)**: Added configurable stderr JSON log filtering (`debug`, `info`, `warn`, `error`, `off`, default `info`) with timing-aware CLI/env precedence and stack-trace redaction outside `debug`.
+- **Transport Environment Parity (`MCP_TRANSPORT`)**: Added `MCP_TRANSPORT` (`stdio` | `http`) environment variable support with `--transport` > `MCP_TRANSPORT` > `stdio` precedence.
+
+### Security & Dependencies
+
+- Updated runtime dependencies (`@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/client`, `zod`, and transitive HTTP server packages) to patched versions with `0` audit advisories across both production and development dependency trees.
+
 ## [0.5.0] - 2026-09-07
 
 ### Added

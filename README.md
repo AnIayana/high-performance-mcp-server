@@ -4,13 +4,13 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 
 ---
 
-## Project Status: Public Preview (v0.5.0)
+## Project Status: Public Preview (v0.6.0)
 
 > [!NOTE]
-> **Status**: `0.5.0` Public Preview.
-> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
+> **Status**: `0.6.0` Public Preview.
+> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, programmatic Node.js library embedding with operator policies, loopback HTTP health probes (`/healthz`), structured operational log levels, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
 >
-> **Compatibility**: The new v0.5 options are additive. Existing callers that omit `contextLines`, `maxDepth`, `createParents`, and `fetch_url.method` retain their established default semantics. v0.5 also includes an intentional create-mode publication hardening: filesystems that cannot provide hard-link no-clobber publication now fail closed instead of using the previous check-then-rename fallback.
+> **Compatibility**: All v0.6 options (`startLine`/`endLine` on `read_text_file`, `dryRun` on `write_text_file` and `edit_text_file`, `--log-level`/`MCP_LOG_LEVEL`, `MCP_TRANSPORT`, and programmatic operator policy options in `createServer`) are additive. Existing callers that omit them retain their established default semantics.
 
 ---
 
@@ -111,6 +111,7 @@ MCP_TRANSPORT=http PORT=3000 node dist/cli.js
 When running with HTTP transport (`--transport=http` or `MCP_TRANSPORT=http`):
 - **Protocol Endpoint**: `http://127.0.0.1:3000/mcp` (Streamable HTTP protocol handler)
 - **Health Endpoint**: `http://127.0.0.1:3000/healthz` (operational liveness probe)
+- **Observability Dashboard** *(opt-in via `--dashboard` or `MCP_DASHBOARD=true`)*: `http://127.0.0.1:3000/dashboard` (zero-dependency, read-only live telemetry UI and `/dashboard/api/stats` JSON snapshot)
 
 ### Loopback Security & Health Contract
 
@@ -133,6 +134,9 @@ The server can be embedded directly into Node.js applications (ESM-only, Node >=
 import {
   createServer,
   resolveWorkspaceConfig,
+  createWorkspaceOperatorPolicy,
+  createNetworkOperatorPolicy,
+  createNetworkCachePolicy,
 } from "high-performance-mcp-server";
 
 // 1. Safe default server (only 'echo' and 'ping' enabled)
@@ -143,11 +147,22 @@ const safeServer = createServer();
 // Gracefully close protocol sessions when done
 await safeServer.close();
 
-// 2. Workspace profile with canonicalized roots
+// 2. Workspace write profile with canonicalized roots and operator policies
 const workspaceConfig = await resolveWorkspaceConfig(["/path/to/project"]);
 const workspaceServer = createServer({
-  profile: "workspace",
+  profile: "workspace_write",
   workspaceConfig,
+  workspacePolicy: createWorkspaceOperatorPolicy({
+    maxWriteBytes: 2 * 1024 * 1024,
+    requireWriteConfirmation: true,
+  }),
+  networkPolicy: createNetworkOperatorPolicy({
+    allowedHostPatterns: ["example.com", "*.githubusercontent.com"],
+    httpsOnly: true,
+  }),
+  networkCachePolicy: createNetworkCachePolicy({
+    enabled: true,
+  }),
 });
 
 await workspaceServer.close();
@@ -265,7 +280,9 @@ The `workspace` profile provides bounded file and directory inspection tools:
    ```
 
 2. **`file_info`**: Retrieves size, timestamps, and file type attributes for a relative path within an allowlisted root.
-3. **`read_text_file`**: Reads UTF-8 file contents up to the configured byte limit (default 256 KiB, max 1 MiB). Files containing NUL bytes are rejected.
+3. **`read_text_file`**:
+   - Reads UTF-8 file contents up to the configured byte limit (default 256 KiB, max 1 MiB). Files containing NUL bytes are rejected.
+   - **Targeted Line Range Slicing**: Optional 1-based inclusive `startLine` and `endLine` parameters (`startLine <= endLine`). Returns `startLine`, `endLine`, and `totalLines` metadata alongside the requested slice. Authoritative `sha256` file digest is returned only when the entire file is read without byte truncation or partial line slicing (`truncated: false`).
 
 ### Searching the Workspace
 
@@ -322,6 +339,7 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
    - **No-Clobber Fail-Closed Hardening**: Create-mode file publication no longer falls back to an unsafe check-then-rename path when hard-link publication is unavailable. `fs.link` is the create publication primitive; unsupported hard-link publication fails closed without overwriting existing files, and unexpected native filesystem errors are sanitized.
    - **Overwrite Mode** (`mode: "overwrite"`): Strictly requires `expectedSha256` (64-character lowercase hex) matching the file's current SHA-256 hash. If the file was modified concurrently, throws `content_conflict` and aborts without touching the target file.
    - **Exclusive Temp & Atomic Replacement**: Creates an exclusive temporary file (`.mcp-temp-<uuid>.tmp`) in the target directory (`O_CREAT | O_EXCL`), flushes to disk (`fsync`), re-validates the target file type and hash, and atomically replaces the destination.
+   - **Non-Mutating Dry-Run Mode**: Optional `dryRun?: boolean` parameter. When `true`, validates root boundaries, parent containment, byte limits, UTF-8/NUL checks, and `expectedSha256`, and returns the computed `sha256`, `previousSha256`, and `bytesWritten` with `dryRun: true` without creating directories, opening temp files, mutating disk, or prompting for write confirmation.
 
    ```json
    {
@@ -341,6 +359,7 @@ npx high-performance-mcp-server --profile=workspace_write --root=./project --wor
    - **Non-Overlapping Occurrence Guarantees**: Evaluates `expectedOccurrences` (default: 1) using non-overlapping literal matching matching the exact replacement semantics.
    - **Transactional Execution**: Applies all edits sequentially in memory. If any edit fails its `expectedOccurrences` check or if the file hash mismatches `expectedSha256`, the operation aborts and the disk file remains 100% untouched.
    - **Strict UTF-8 & BOM Preservation**: Non-UTF-8 binary files are rejected (`invalid_text_encoding`). Existing UTF-8 BOM headers and CRLF line endings are preserved with byte-for-byte fidelity.
+   - **Non-Mutating Dry-Run Mode**: Optional `dryRun?: boolean` parameter. When `true`, executes all sequential literal replacements, occurrence checks, and `expectedSha256` validations in memory and returns the resulting `sha256`, `previousSha256`, `bytesWritten`, and `editsApplied` with `dryRun: true` without touching the disk or prompting for write confirmation.
 
    ```json
    {
@@ -518,6 +537,7 @@ Usage:
 Options:
   --transport=<stdio|http>       Transport protocol to run (default: stdio)
   --port=<number>                HTTP server port (default: 3000, only for http transport)
+  --dashboard                    Enable read-only loopback observability dashboard at /dashboard (http transport)
   --profile=<profile>            Security tool profile (default: safe)
   --root=<path>                  Allowlisted workspace root (repeatable, max 16)
   --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)
@@ -598,6 +618,7 @@ See [`.env.example`](.env.example) for a ready-to-use template containing all su
 | `MCP_PROFILE` | `string` | `safe` | Default tool profile override (`safe`, `workspace`, `workspace_write`, `network`, `diagnostics`, `benchmark`, `admin`, `all`) |
 | `MCP_TRANSPORT` | `string` | `stdio` | Transport protocol override (`stdio`, `http`). CLI `--transport` overrides this variable. |
 | `PORT` | `number` | `3000` | Default HTTP port override (strict integer 1-65535) |
+| `MCP_DASHBOARD` | `boolean` | `false` | Enable read-only loopback observability dashboard at `/dashboard` on HTTP transport (`true`/`1`/`false`/`0`) |
 | `MCP_LOG_LEVEL` | `string` | `info` | Operational log level override (`debug`, `info`, `warn`, `error`, `off`) |
 | `MCP_ROOTS_JSON` | `string` | *(none)* | JSON array of workspace roots (e.g. `["/home/user/project", "/home/user/docs"]`) |
 | `MCP_WORKSPACE_MAX_WRITE_BYTES` | `number` | `1048576` | Operator workspace write size cap in bytes override (1 to 5242880) |

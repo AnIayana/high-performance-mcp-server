@@ -7,11 +7,20 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as publicApi from "../src/index.js";
-import { createServer, resolveWorkspaceConfig } from "../src/index.js";
+import {
+  createNetworkCachePolicy,
+  createNetworkOperatorPolicy,
+  createServer,
+  createWorkspaceOperatorPolicy,
+  resolveWorkspaceConfig,
+} from "../src/index.js";
 import type {
   CreateServerOptions,
+  NetworkCachePolicy,
+  NetworkOperatorPolicy,
   ToolProfile,
   WorkspaceConfig,
+  WorkspaceOperatorPolicy,
   WorkspaceRoot,
 } from "../src/index.js";
 
@@ -38,7 +47,7 @@ test("Package Metadata — main, types, absence of exports, and bin mapping", ()
     "bin/cli.js",
     "package.json bin must point to bin/cli.js"
   );
-  assert.equal(pkg.version, "0.5.0", "Package version must remain 0.5.0");
+  assert.equal(pkg.version, "0.6.0", "Package version must match current release");
 
   const binCliContent = fs.readFileSync(path.join(rootDir, "bin/cli.js"), "utf-8");
   assert.ok(
@@ -55,6 +64,21 @@ test("Root Public API — surface inventory and forbidden internal omissions", (
     "function",
     "resolveWorkspaceConfig must be exported"
   );
+  assert.equal(
+    typeof publicApi.createWorkspaceOperatorPolicy,
+    "function",
+    "createWorkspaceOperatorPolicy must be exported"
+  );
+  assert.equal(
+    typeof publicApi.createNetworkOperatorPolicy,
+    "function",
+    "createNetworkOperatorPolicy must be exported"
+  );
+  assert.equal(
+    typeof publicApi.createNetworkCachePolicy,
+    "function",
+    "createNetworkCachePolicy must be exported"
+  );
 
   // 2. Prohibited exports must NOT be present on public root
   const forbiddenNames = [
@@ -62,9 +86,6 @@ test("Root Public API — surface inventory and forbidden internal omissions", (
     "createHttpTransportServer",
     "startHttpTransport",
     "startStdioTransport",
-    "createWorkspaceOperatorPolicy",
-    "createNetworkOperatorPolicy",
-    "createNetworkCachePolicy",
     "DEFAULT_WORKSPACE_OPERATOR_POLICY",
     "DEFAULT_NETWORK_OPERATOR_POLICY",
     "DEFAULT_NETWORK_CACHE_POLICY",
@@ -82,12 +103,18 @@ test("Root Public API — surface inventory and forbidden internal omissions", (
     );
   }
 
-  // 3. Verify public export count is exact (only createServer and resolveWorkspaceConfig)
+  // 3. Verify public export count is exact
   const exportedKeys = Object.keys(publicApi);
   assert.deepEqual(
     exportedKeys.sort(),
-    ["createServer", "resolveWorkspaceConfig"],
-    "Only createServer and resolveWorkspaceConfig must be exported functions"
+    [
+      "createNetworkCachePolicy",
+      "createNetworkOperatorPolicy",
+      "createServer",
+      "createWorkspaceOperatorPolicy",
+      "resolveWorkspaceConfig",
+    ],
+    "Only canonical factory and policy functions must be exported"
   );
 });
 
@@ -155,7 +182,7 @@ test("Factory Safe Default — createServer() defaults to safe profile with echo
   // Verify internal instructions and server info
   const internalInfo = (server.server as any)._serverInfo;
   assert.equal(internalInfo?.name, "high-performance-mcp-server");
-  assert.equal(internalInfo?.version, "0.5.0");
+  assert.equal(internalInfo?.version, "0.6.0");
 
   // Verify registered tools exact
   const registeredTools = Object.keys((server as any)._registeredTools || {});
@@ -219,6 +246,44 @@ test("Multi-Instance Safety — two createServer instances can coexist and close
   await server2.close();
 });
 
+test("Programmatic Operator Policies — createWorkspaceOperatorPolicy, createNetworkOperatorPolicy, createNetworkCachePolicy", async () => {
+  const wsPolicy: WorkspaceOperatorPolicy = createWorkspaceOperatorPolicy({
+    maxWriteBytes: 65536,
+    maxResourceBytes: 131072,
+    requireWriteConfirmation: true,
+  });
+  assert.equal(wsPolicy.maxWriteBytes, 65536);
+  assert.equal(wsPolicy.maxResourceBytes, 131072);
+  assert.equal(wsPolicy.requireWriteConfirmation, true);
+
+  const netPolicy: NetworkOperatorPolicy = createNetworkOperatorPolicy({
+    allowHosts: ["example.com", "*.githubusercontent.com"],
+    httpsOnly: true,
+    maxResponseBytes: 262144,
+    maxTimeoutMs: 5000,
+  });
+  assert.deepEqual(netPolicy.allowHosts, ["example.com", "*.githubusercontent.com"]);
+  assert.equal(netPolicy.httpsOnly, true);
+
+  const cachePolicy: NetworkCachePolicy = createNetworkCachePolicy({
+    enabled: true,
+    maxEntries: 64,
+    maxSizeBytes: 1048576,
+    retentionTtlMs: 60000,
+  });
+  assert.equal(cachePolicy.enabled, true);
+  assert.equal(cachePolicy.maxEntries, 64);
+
+  const server = createServer({
+    profile: "all",
+    workspacePolicy: wsPolicy,
+    networkPolicy: netPolicy,
+    networkCachePolicy: cachePolicy,
+  });
+  assert.ok(server);
+  await server.close();
+});
+
 test("CLI Regression — dist/cli.js executes --version, --help, --list-tools, and invalid flags", () => {
   const cliPath = path.resolve(rootDir, "dist/cli.js");
 
@@ -228,7 +293,7 @@ test("CLI Regression — dist/cli.js executes --version, --help, --list-tools, a
     encoding: "utf-8",
   });
   assert.equal(versionRes.status, 0);
-  assert.equal(versionRes.stdout.trim(), "0.5.0");
+  assert.equal(versionRes.stdout.trim(), "0.6.0");
 
   // 2. --help
   const helpRes = spawnSync(process.execPath, [cliPath, "--help"], {
