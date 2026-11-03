@@ -4,13 +4,13 @@ A high-performance, modular Model Context Protocol (MCP) server built with TypeS
 
 ---
 
-## Project Status: Public Preview (v0.6.0)
+## Project Status: Public Preview (v0.7.0)
 
 > [!NOTE]
-> **Status**: `0.6.0` Public Preview.
-> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, programmatic Node.js library embedding with operator policies, loopback HTTP health probes (`/healthz`), structured operational log levels, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
+> **Status**: `0.7.0` Public Preview.
+> This package provides safe-by-default MCP tools, read-only workspace inspection, opt-in guarded workspace mutation and network access, programmatic Node.js library embedding with operator policies, loopback HTTP health probes (`/healthz`) and opt-in observability dashboard (`/dashboard`), structured operational log levels, worker request cancellation, normalized progress reporting, and high-performance worker execution. Requires **Node.js >= 22.0.0**.
 >
-> **Compatibility**: All v0.6 options (`startLine`/`endLine` on `read_text_file`, `dryRun` on `write_text_file` and `edit_text_file`, `--log-level`/`MCP_LOG_LEVEL`, `MCP_TRANSPORT`, and programmatic operator policy options in `createServer`) are additive. Existing callers that omit them retain their established default semantics.
+> **Compatibility**: All v0.7 options (`includeSha256` on `file_info`, `extensions` on `search_files`, `excludeIgnored` on `list_directory`) are additive. Existing callers that omit them retain their established default semantics.
 
 ---
 
@@ -265,6 +265,7 @@ The `workspace` profile provides bounded file and directory inspection tools:
 1. **`list_directory`**:
    - Lists directory contents within an allowlisted workspace root up to a global 500-entry cap (`truncated: true` when exceeded).
    - **Bounded Recursive Traversal**: Optional `maxDepth` parameter (`1..5`, default: `1`). When `maxDepth > 1`, directory trees are traversed breadth-first (BFS) up to the specified depth and returned as a flat list.
+   - **Ignored Directory Filtering**: Optional `excludeIgnored` parameter (default: `false`). When `true`, skips common build/vendor directories (`.git`, `node_modules`, `dist`, `build`, `.next`, etc.) during directory listing and recursive traversal.
    - **Relative Path Output**: In recursive mode, entries include a normalized `relativePath` with forward-slash separators (`/`), while `name` preserves the entry's basename.
    - **Deterministic Sorting**: Existing comparator behavior is preserved across directory entries.
 
@@ -274,12 +275,13 @@ The `workspace` profile provides bounded file and directory inspection tools:
      "arguments": {
        "rootId": "root-1",
        "path": "src",
-       "maxDepth": 2
+       "maxDepth": 2,
+       "excludeIgnored": true
      }
    }
    ```
 
-2. **`file_info`**: Retrieves size, timestamps, and file type attributes for a relative path within an allowlisted root.
+2. **`file_info`**: Retrieves size, timestamps, and file type attributes for a relative path within an allowlisted root. Supports optional `includeSha256?: boolean` (default: `false`) to compute the authoritative `sha256` hex digest for regular files up to 1 MiB without reading the file content over the wire.
 3. **`read_text_file`**:
    - Reads UTF-8 file contents up to the configured byte limit (default 256 KiB, max 1 MiB). Files containing NUL bytes are rejected.
    - **Targeted Line Range Slicing**: Optional 1-based inclusive `startLine` and `endLine` parameters (`startLine <= endLine`). Returns `startLine`, `endLine`, and `totalLines` metadata alongside the requested slice. Authoritative `sha256` file digest is returned only when the entire file is read without byte truncation or partial line slicing (`truncated: false`).
@@ -290,7 +292,7 @@ The `workspace` profile provides bounded, read-only search tools:
 
 1. **`search_files`**:
    - Searches file and directory names using literal substring matching.
-   - Filters by kind (`file`, `directory`, `all`), case sensitivity, and start path.
+   - Filters by kind (`file`, `directory`, `all`), optional file `extensions` (e.g. `['.ts', '.md']` or `['ts', 'md']`), case sensitivity, and start path.
    - Skips common build/vendor directories (`.git`, `node_modules`, `.next`, `dist`, `build`, `target`, etc.) by default. Pass `includeIgnored: true` to search them.
    - Never traverses into symlink/junction directories to prevent recursion cycles and escapes.
    - Streams native MCP progress notifications (`notifications/progress`) when a client `progressToken` is provided.

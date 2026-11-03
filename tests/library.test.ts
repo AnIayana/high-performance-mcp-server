@@ -47,7 +47,7 @@ test("Package Metadata — main, types, absence of exports, and bin mapping", ()
     "bin/cli.js",
     "package.json bin must point to bin/cli.js"
   );
-  assert.equal(pkg.version, "0.6.0", "Package version must match current release");
+  assert.equal(pkg.version, "0.7.0", "Package version must match current release");
 
   const binCliContent = fs.readFileSync(path.join(rootDir, "bin/cli.js"), "utf-8");
   assert.ok(
@@ -182,7 +182,7 @@ test("Factory Safe Default — createServer() defaults to safe profile with echo
   // Verify internal instructions and server info
   const internalInfo = (server.server as any)._serverInfo;
   assert.equal(internalInfo?.name, "high-performance-mcp-server");
-  assert.equal(internalInfo?.version, "0.6.0");
+  assert.equal(internalInfo?.version, "0.7.0");
 
   // Verify registered tools exact
   const registeredTools = Object.keys((server as any)._registeredTools || {});
@@ -293,7 +293,7 @@ test("CLI Regression — dist/cli.js executes --version, --help, --list-tools, a
     encoding: "utf-8",
   });
   assert.equal(versionRes.status, 0);
-  assert.equal(versionRes.stdout.trim(), "0.6.0");
+  assert.equal(versionRes.stdout.trim(), "0.7.0");
 
   // 2. --help
   const helpRes = spawnSync(process.execPath, [cliPath, "--help"], {

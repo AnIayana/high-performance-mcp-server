@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-03
+
+### Added
+
+- **Optional SHA-256 Digest in Metadata (`file_info`)**: Added optional `includeSha256?: boolean` parameter (default `false`). When `true` on a regular file up to 1 MiB (`MAX_TEXT_READ_BYTES`), computes and returns the authoritative `sha256` hex digest without transferring the file body, enabling lightweight optimistic-concurrency verification after partial line-range reads.
+- **Extension Filtering in File Search (`search_files`)**: Added optional `extensions?: string[]` filter (e.g. `['.ts', '.md']` or `['ts', 'md']`, up to 32 extensions) with normalized lowercase matching and output metadata parity with `search_text`.
+- **Ignored Directory Filtering in Directory Listing (`list_directory`)**: Added optional `excludeIgnored?: boolean` parameter (default `false`). When `true`, skips common build and vendor directories (`.git`, `node_modules`, `dist`, `build`, `.next`, `.turbo`, `.cache`, `coverage`, `out`, `target`) at both depth 1 and recursive (`maxDepth > 1`) traversals.
+
 ## [0.6.0] - 2026-11-02
 
 ### Added
