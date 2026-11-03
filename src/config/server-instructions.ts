@@ -11,7 +11,7 @@ Recommended Workflow:
 1. Call workspace_roots to discover allowed logical root IDs (e.g. root-1) and root names.
 2. Use search_files or search_text to locate targets before inspecting files.
 3. Use file_info when entry metadata or file size is relevant.
-4. Read text files via read_text_file or MCP workspace resources (workspace:///<rootId>/<path>) only when needed for the user task.
+4. Read text files via read_text_file (optionally with 1-based startLine/endLine for targeted line ranges) or MCP workspace resources (workspace:///<rootId>/<path>) only when needed for the user task.
 
 Safety and Operational Rules:
 - Workspace is strictly READ-ONLY. No file modification, deletion, or shell execution capabilities exist.
@@ -39,7 +39,7 @@ Recommended Workflow:
 3. Read text files with read_text_file to obtain current content and the authoritative sha256 hash. Workspace files may also be inspected via read-only MCP Resources (workspace:///<rootId>/<path>).
 4. To create a new file, call write_text_file with mode: "create".
 5. To overwrite an existing file, call write_text_file with mode: "overwrite" and provide expectedSha256 matching the file's current hash.
-6. To make targeted edits, call edit_text_file with expectedSha256 and an ordered array of literal text replacements (edits: [{ oldText, newText, expectedOccurrences? }]).
+6. To make targeted edits, call edit_text_file with expectedSha256 and an ordered array of literal text replacements (edits: [{ oldText, newText, expectedOccurrences? }]). Pass dryRun: true to preview and validate write/edit operations without modifying disk.
 
 Safety and Operational Rules:
 - All operations are confined strictly to configured workspace roots. Absolute paths and path traversal are rejected.

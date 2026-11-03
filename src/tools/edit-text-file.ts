@@ -51,6 +51,10 @@ export default function registerEditTextFileTool(
           )
           .min(1)
           .describe("Ordered list of exact literal edits to apply sequentially in memory"),
+        dryRun: z
+          .boolean()
+          .optional()
+          .describe("If true, validates all security, size, SHA-256, and occurrence rules without modifying the filesystem"),
       }),
       outputSchema: z.object({
         rootId: z.string(),
@@ -59,11 +63,12 @@ export default function registerEditTextFileTool(
         bytesWritten: z.number(),
         sha256: z.string(),
         previousSha256: z.string(),
+        dryRun: z.boolean().optional(),
       }),
     },
     withToolMetrics(toolMeta.name, async (args, mcpContext?: McpServerContext): Promise<CallToolResult | InputRequiredResult> => {
       try {
-        if (context?.workspacePolicy?.requireWriteConfirmation) {
+        if (context?.workspacePolicy?.requireWriteConfirmation && !args.dryRun) {
           const target = await resolveWritePathWithinRoot(
             context.workspace, args.rootId, args.path, false
           );
@@ -92,6 +97,7 @@ export default function registerEditTextFileTool(
           path: args.path,
           expectedSha256: args.expectedSha256,
           edits: args.edits,
+          dryRun: args.dryRun,
           operatorPolicy: context?.workspacePolicy,
         });
 

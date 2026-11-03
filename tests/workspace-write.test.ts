@@ -1783,3 +1783,77 @@ test("write_text_file (create) — partial side effects: created parent director
     await fs.rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("write_text_file & edit_text_file — dryRun mode validates and computes hashes without disk mutation", async () => {
+  const rootDir = await createTestDir("mcp-write-dry-run");
+  const sha256 = (text: string): string => crypto.createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
+  try {
+    const config = await resolveWorkspaceConfig([rootDir]);
+
+    // 1. write_text_file (create + createParents + dryRun: true) -> zero directories or files created on disk
+    const createPreview = await writeTextFileService(config, {
+      path: "dry_nested/sub/new.txt",
+      mode: "create",
+      content: "DRY_CREATE_CONTENT\n",
+      createParents: true,
+      dryRun: true,
+    });
+    assert.equal(createPreview.dryRun, true);
+    assert.equal(createPreview.mode, "create");
+    assert.equal(createPreview.bytesWritten, Buffer.byteLength("DRY_CREATE_CONTENT\n", "utf8"));
+    assert.equal(createPreview.sha256, sha256("DRY_CREATE_CONTENT\n"));
+    await assert.rejects(async () => fs.lstat(path.join(rootDir, "dry_nested")), { code: "ENOENT" });
+
+    // 2. Create real file to test overwrite and edit dryRun
+    const targetFile = path.join(rootDir, "existing.txt");
+    const initialContent = "const VERSION = 1;\nconst ENABLED = false;\n";
+    await fs.writeFile(targetFile, initialContent, "utf8");
+    const initialHash = sha256(initialContent);
+
+    // 3. write_text_file (overwrite + dryRun: true) -> file on disk remains untouched
+    const overwriteContent = "const VERSION = 2;\n";
+    const overwritePreview = await writeTextFileService(config, {
+      path: "existing.txt",
+      mode: "overwrite",
+      content: overwriteContent,
+      expectedSha256: initialHash,
+      dryRun: true,
+    });
+    assert.equal(overwritePreview.dryRun, true);
+    assert.equal(overwritePreview.previousSha256, initialHash);
+    assert.equal(overwritePreview.sha256, sha256(overwriteContent));
+    assert.equal(await fs.readFile(targetFile, "utf8"), initialContent);
+
+    // 4. edit_text_file (dryRun: true) -> computes resulting sha256 without modifying disk file
+    const editPreview = await editTextFileService(config, {
+      path: "existing.txt",
+      expectedSha256: initialHash,
+      dryRun: true,
+      edits: [
+        { oldText: "const VERSION = 1;", newText: "const VERSION = 3;", expectedOccurrences: 1 },
+        { oldText: "const ENABLED = false;", newText: "const ENABLED = true;", expectedOccurrences: 1 },
+      ],
+    });
+    const expectedEdited = "const VERSION = 3;\nconst ENABLED = true;\n";
+    assert.equal(editPreview.dryRun, true);
+    assert.equal(editPreview.editsApplied, 2);
+    assert.equal(editPreview.previousSha256, initialHash);
+    assert.equal(editPreview.sha256, sha256(expectedEdited));
+    assert.equal(await fs.readFile(targetFile, "utf8"), initialContent);
+
+    // 5. edit_text_file (dryRun: true) still enforces occurrence mismatch and SHA-256 conflict
+    await assert.rejects(
+      async () => {
+        await editTextFileService(config, {
+          path: "existing.txt",
+          expectedSha256: initialHash,
+          dryRun: true,
+          edits: [{ oldText: "NON_EXISTENT", newText: "X", expectedOccurrences: 1 }],
+        });
+      },
+      (err: any) => err.code === "occurrence_mismatch"
+    );
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});

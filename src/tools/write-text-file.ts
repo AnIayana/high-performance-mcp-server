@@ -28,6 +28,10 @@ export const writeTextFileInputSchema = z.discriminatedUnion("mode", [
       .boolean()
       .optional()
       .describe("If true, safely creates missing parent directories within the workspace root"),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe("If true, validates all security, size, and target rules without modifying the filesystem"),
   }),
   z.strictObject({
     rootId: z.string().optional().describe("The ID of the allowed workspace root (e.g. root-1)"),
@@ -38,6 +42,10 @@ export const writeTextFileInputSchema = z.discriminatedUnion("mode", [
       .string()
       .regex(/^[a-f0-9]{64}$/, "expectedSha256 must be a 64-character lowercase hex SHA-256 string")
       .describe("Expected 64-character lowercase hex SHA-256 hash of the existing file"),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe("If true, validates all security, size, and SHA-256 concurrency rules without modifying the filesystem"),
   }),
 ]);
 
@@ -58,12 +66,13 @@ export default function registerWriteTextFileTool(
         bytesWritten: z.number(),
         sha256: z.string(),
         previousSha256: z.string().optional(),
+        dryRun: z.boolean().optional(),
       }),
     },
     withToolMetrics(toolMeta.name, async (args, mcpContext?: McpServerContext): Promise<CallToolResult | InputRequiredResult> => {
       try {
         const createParents = args.mode === "create" ? args.createParents : undefined;
-        if (context?.workspacePolicy?.requireWriteConfirmation) {
+        if (context?.workspacePolicy?.requireWriteConfirmation && !args.dryRun) {
           const target = await resolveWritePathWithinRoot(
             context.workspace,
             args.rootId,
@@ -100,6 +109,7 @@ export default function registerWriteTextFileTool(
           mode: args.mode,
           content: args.content,
           createParents,
+          dryRun: args.dryRun,
           expectedSha256: args.mode === "overwrite" ? args.expectedSha256 : undefined,
           operatorPolicy: context?.workspacePolicy,
         });

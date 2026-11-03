@@ -406,3 +406,27 @@ test("Workspace confirmation — createParents message formatting and privacy", 
   assert.ok(msgWith.includes('rootId="root-1"'));
   assert.ok(msgWith.includes('path="dir/test.txt"'));
 });
+
+test("Workspace confirmation — dryRun=true bypasses interactive confirmation and performs zero disk mutation", async (t) => {
+  let prompts = 0;
+  const setup = await fixture(t, {
+    confirmation: true,
+    onElicit: () => {
+      prompts++;
+      return { action: "decline" };
+    },
+  });
+
+  for (const mutation of mutations) {
+    const result = await setup.client.callTool({
+      name: mutation.name,
+      arguments: { ...mutation.arguments, dryRun: true },
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result.content));
+    assert.equal((result.structuredContent as any)?.dryRun, true);
+  }
+
+  assert.equal(prompts, 0, "dryRun must not elicit confirmation");
+  assert.deepEqual(await fs.readdir(setup.rootDir), ["existing.txt"]);
+  assert.equal(await fs.readFile(path.join(setup.rootDir, "existing.txt"), "utf8"), initialText);
+});

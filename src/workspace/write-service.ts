@@ -69,6 +69,7 @@ export interface WriteTextFileInput {
   mode: WriteMode;
   content: string;
   createParents?: boolean;
+  dryRun?: boolean;
   expectedSha256?: string;
   operatorPolicy?: WorkspaceOperatorPolicy;
 }
@@ -80,6 +81,7 @@ export interface WriteTextFileResult {
   bytesWritten: number;
   sha256: string;
   previousSha256?: string;
+  dryRun?: boolean;
 }
 
 export interface TextEditItem {
@@ -93,6 +95,7 @@ export interface EditTextFileInput {
   path: string;
   expectedSha256: string;
   edits: readonly TextEditItem[];
+  dryRun?: boolean;
   operatorPolicy?: WorkspaceOperatorPolicy;
 }
 
@@ -103,6 +106,7 @@ export interface EditTextFileResult {
   bytesWritten: number;
   sha256: string;
   previousSha256: string;
+  dryRun?: boolean;
 }
 
 /**
@@ -740,9 +744,10 @@ export async function writeTextFileService(
     );
   }
 
+  const isDryRun = input.dryRun === true;
   let resolved: ResolvedWritePathResult;
 
-  if (isCreate && createParents) {
+  if (isCreate && createParents && !isDryRun) {
     const root = resolveRoot(workspaceConfig, input.rootId);
     const parentDir = await ensureParentDirectories(root, input.path);
     const fileName = path.basename(input.path.trim());
@@ -806,6 +811,19 @@ export async function writeTextFileService(
     if (resolved.stats) {
       fileMode = resolved.stats.mode & 0o777;
     }
+  }
+
+  if (isDryRun) {
+    const newSha256 = crypto.createHash("sha256").update(contentBuffer).digest("hex");
+    return {
+      rootId: resolved.root.id,
+      path: resolved.relativeToRoot,
+      mode,
+      bytesWritten: contentBuffer.byteLength,
+      sha256: newSha256,
+      previousSha256,
+      dryRun: true,
+    };
   }
 
   const targetDir = path.dirname(resolved.targetPath);
@@ -1113,6 +1131,19 @@ export async function editTextFileService(
       "write_too_large",
       `Resulting file size (${newBytes.byteLength} bytes) exceeds maximum permitted write size (${effectiveMaxBytes} bytes).`
     );
+  }
+
+  if (input.dryRun === true) {
+    const newSha256 = crypto.createHash("sha256").update(newBytes).digest("hex");
+    return {
+      rootId: resolved.root.id,
+      path: resolved.relativeToRoot,
+      editsApplied: input.edits.length,
+      bytesWritten: newBytes.byteLength,
+      sha256: newSha256,
+      previousSha256,
+      dryRun: true,
+    };
   }
 
   // Capture mode for preservation
