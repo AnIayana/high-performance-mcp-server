@@ -9,6 +9,7 @@ import {
   isContainedWithinRoot,
   resolveExistingPathWithinRoot,
 } from "./path-security.js";
+import { COMMON_SEARCH_IGNORED_DIRECTORIES } from "./search.js";
 
 export interface DirectoryEntryItem {
   name: string;
@@ -24,6 +25,10 @@ export interface ListDirectoryResult {
   truncated: boolean;
 }
 
+export interface FileInfoOptions {
+  readonly includeSha256?: boolean;
+}
+
 export interface FileInfoResult {
   rootId: string;
   path: string;
@@ -32,6 +37,7 @@ export interface FileInfoResult {
   modifiedAt: string;
   createdAt: string;
   isSymlink: boolean;
+  sha256?: string;
 }
 
 export interface ReadTextFileOptions {
@@ -61,7 +67,8 @@ export async function listDirectoryService(
   workspaceConfig: WorkspaceConfig | undefined,
   rootId: string,
   relativePath: string = ".",
-  maxDepth: number = 1
+  maxDepth: number = 1,
+  excludeIgnored: boolean = false
 ): Promise<ListDirectoryResult> {
   const resolved = await resolveExistingPathWithinRoot(workspaceConfig, rootId, relativePath);
 
@@ -76,8 +83,13 @@ export async function listDirectoryService(
 
   if (effectiveMaxDepth === 1) {
     const dirEntries = await fs.readdir(resolved.resolvedPath, { withFileTypes: true });
+    const filteredEntries = excludeIgnored
+      ? dirEntries.filter(
+          (entry) => !(entry.isDirectory() && COMMON_SEARCH_IGNORED_DIRECTORIES.has(entry.name))
+        )
+      : dirEntries;
 
-    const mappedEntries: DirectoryEntryItem[] = dirEntries.map((entry) => ({
+    const mappedEntries: DirectoryEntryItem[] = filteredEntries.map((entry) => ({
       name: entry.name,
       type: entry.isDirectory()
         ? "directory"
@@ -148,6 +160,9 @@ export async function listDirectoryService(
 
     for (const entry of dirEntries) {
       const isDir = entry.isDirectory();
+      if (excludeIgnored && isDir && COMMON_SEARCH_IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
       const isFile = entry.isFile();
       const isSymlink = entry.isSymbolicLink();
       const entryType: "file" | "directory" | "symlink" | "other" = isDir
@@ -235,7 +250,8 @@ export async function listDirectoryService(
 export async function getFileInfoService(
   workspaceConfig: WorkspaceConfig | undefined,
   rootId: string,
-  relativePath: string
+  relativePath: string,
+  options: FileInfoOptions = {}
 ): Promise<FileInfoResult> {
   const resolved = await resolveExistingPathWithinRoot(workspaceConfig, rootId, relativePath);
 
@@ -247,6 +263,18 @@ export async function getFileInfoService(
         ? "symlink"
         : "other";
 
+  let sha256: string | undefined;
+  if (
+    options.includeSha256 === true &&
+    resolved.isFile &&
+    resolved.stats.size <= MAX_TEXT_READ_BYTES
+  ) {
+    const buf = await fs.readFile(resolved.resolvedPath);
+    if (buf.length <= MAX_TEXT_READ_BYTES) {
+      sha256 = crypto.createHash("sha256").update(buf).digest("hex");
+    }
+  }
+
   return {
     rootId: resolved.root.id,
     path: resolved.relativeToRoot,
@@ -255,6 +283,7 @@ export async function getFileInfoService(
     modifiedAt: resolved.stats.mtime.toISOString(),
     createdAt: resolved.stats.birthtime.toISOString(),
     isSymlink: resolved.isSymlink,
+    ...(sha256 !== undefined ? { sha256 } : {}),
   };
 }
 

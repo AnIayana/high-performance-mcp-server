@@ -291,3 +291,55 @@ test("Workspace Service — readTextFileService startLine and endLine range slic
     fixture.cleanup();
   }
 });
+
+test("Workspace Service — getFileInfoService optional includeSha256 and listDirectoryService excludeIgnored", async () => {
+  const fixture = createWorkspaceFixture();
+
+  try {
+    // 1. getFileInfoService without includeSha256 omits sha256
+    const infoDefault = await getFileInfoService(fixture.config, "root-1", "README.md");
+    assert.equal(infoDefault.sha256, undefined);
+
+    // 2. getFileInfoService with includeSha256: true returns authoritative SHA-256 matching readTextFileService
+    const infoHash = await getFileInfoService(fixture.config, "root-1", "README.md", {
+      includeSha256: true,
+    });
+    const fullRead = await readTextFileService(fixture.config, "root-1", "README.md");
+    assert.equal(typeof infoHash.sha256, "string");
+    assert.equal(infoHash.sha256, fullRead.sha256);
+
+    // 3. getFileInfoService on directory with includeSha256: true omits sha256
+    const dirInfo = await getFileInfoService(fixture.config, "root-1", "src", {
+      includeSha256: true,
+    });
+    assert.equal(dirInfo.type, "directory");
+    assert.equal(dirInfo.sha256, undefined);
+
+    // 4. listDirectoryService with excludeIgnored: true skips .git and node_modules at depth 1 and depth 2
+    fs.mkdirSync(path.join(fixture.tempDir, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(fixture.tempDir, "node_modules", "pkg", "index.js"), "module.exports = {};");
+    fs.mkdirSync(path.join(fixture.tempDir, ".git"), { recursive: true });
+
+    const withIgnored = await listDirectoryService(fixture.config, "root-1", ".", 2, false);
+    assert.ok(withIgnored.entries.some((e) => e.name === "node_modules"));
+    assert.ok(withIgnored.entries.some((e) => e.name === ".git"));
+
+    const withoutIgnoredDepth1 = await listDirectoryService(fixture.config, "root-1", ".", 1, true);
+    assert.equal(withoutIgnoredDepth1.entries.some((e) => e.name === "node_modules"), false);
+    assert.equal(withoutIgnoredDepth1.entries.some((e) => e.name === ".git"), false);
+    assert.ok(withoutIgnoredDepth1.entries.some((e) => e.name === "src"));
+
+    const withoutIgnoredDepth2 = await listDirectoryService(fixture.config, "root-1", ".", 2, true);
+    assert.equal(
+      withoutIgnoredDepth2.entries.some((e) => e.relativePath?.startsWith("node_modules")),
+      false
+    );
+    assert.equal(
+      withoutIgnoredDepth2.entries.some((e) => e.relativePath?.startsWith(".git")),
+      false
+    );
+    assert.ok(withoutIgnoredDepth2.entries.some((e) => e.relativePath === "src/index.ts"));
+  } finally {
+    fixture.cleanup();
+  }
+});

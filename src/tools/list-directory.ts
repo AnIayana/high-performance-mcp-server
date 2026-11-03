@@ -35,6 +35,13 @@ export default function registerListDirectoryTool(
           .optional()
           .default(1)
           .describe("Maximum recursive subdirectory depth to list (1..5, default: 1)"),
+        excludeIgnored: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "When true, skips common ignored directories such as .git, node_modules, dist, and build (default: false)"
+          ),
       }),
       outputSchema: z.object({
         rootId: z.string(),
@@ -56,7 +63,8 @@ export default function registerListDirectoryTool(
           context?.workspace,
           args.rootId,
           args.path ?? ".",
-          args.maxDepth ?? 1
+          args.maxDepth ?? 1,
+          args.excludeIgnored ?? false
         );
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
