@@ -13,6 +13,8 @@ import {
   parseCliArgs,
   parseStrictPort,
 } from "../src/config/cli.js";
+import { resolveWorkspaceConfig } from "../src/config/workspace.js";
+import { createHttpTransportServer } from "../src/transports/http.js";
 
 test("Helper — parseStrictPort validation rules", () => {
   assert.equal(parseStrictPort("3000"), 3000);
@@ -793,5 +795,91 @@ test("CLI Subprocess — MCP_TRANSPORT runtime behavior and precedence", async (
         resolve();
       }, 3000);
     });
+  }
+});
+
+test("CLI Parser — --dashboard and MCP_DASHBOARD parsing and precedence", () => {
+  // Default is undefined / disabled
+  assert.equal(parseCliArgs([], {}).dashboard, undefined);
+
+  // CLI flag enables dashboard
+  assert.equal(parseCliArgs(["--dashboard"], {}).dashboard, true);
+
+  // Environment variable MCP_DASHBOARD
+  assert.equal(parseCliArgs([], { MCP_DASHBOARD: "true" }).dashboard, true);
+  assert.equal(parseCliArgs([], { MCP_DASHBOARD: "1" }).dashboard, true);
+  assert.equal(parseCliArgs([], { MCP_DASHBOARD: "false" }).dashboard, undefined);
+  assert.equal(parseCliArgs([], { MCP_DASHBOARD: "0" }).dashboard, undefined);
+
+  // CLI --dashboard overrides MCP_DASHBOARD=false
+  assert.equal(parseCliArgs(["--dashboard"], { MCP_DASHBOARD: "false" }).dashboard, true);
+
+  // Duplicate --dashboard rejected
+  const dup = parseCliArgs(["--dashboard", "--dashboard"], {});
+  assert.ok(dup.error?.includes('Duplicate option specified: "--dashboard"'));
+
+  // Invalid MCP_DASHBOARD rejected
+  const invalidEnv = parseCliArgs([], { MCP_DASHBOARD: "maybe" });
+  assert.ok(invalidEnv.error?.includes("Invalid MCP_DASHBOARD environment variable"));
+});
+
+test("HTTP Transport Dashboard — default disabled (404) and opt-in enabled with host-path privacy", async () => {
+  // 1. Default HTTP server: /dashboard and /dashboard/api/stats must return 404
+  const disabledServer = await createHttpTransportServer(0, "safe");
+  try {
+    const resHtml = await fetch(`http://127.0.0.1:${disabledServer.port}/dashboard`);
+    assert.equal(resHtml.status, 404);
+    const resStats = await fetch(`http://127.0.0.1:${disabledServer.port}/dashboard/api/stats`);
+    assert.equal(resStats.status, 404);
+  } finally {
+    await disabledServer.close();
+  }
+
+  // 2. Enabled dashboard with workspace root: verify HTML, stats JSON, HEAD, 405, and zero host path leakage
+  const wsConfig = await resolveWorkspaceConfig([process.cwd()]);
+  const enabledServer = await createHttpTransportServer(
+    0,
+    "workspace",
+    wsConfig,
+    undefined,
+    undefined,
+    undefined,
+    true
+  );
+  try {
+    const htmlRes = await fetch(`http://127.0.0.1:${enabledServer.port}/dashboard`);
+    assert.equal(htmlRes.status, 200);
+    assert.match(htmlRes.headers.get("content-type") ?? "", /text\/html/);
+    assert.equal(htmlRes.headers.get("cache-control"), "no-store");
+    assert.ok(htmlRes.headers.get("content-security-policy")?.includes("default-src 'none'"));
+    const htmlText = await htmlRes.text();
+    assert.ok(htmlText.includes("High-Performance MCP Server"));
+
+    const headRes = await fetch(`http://127.0.0.1:${enabledServer.port}/dashboard`, {
+      method: "HEAD",
+    });
+    assert.equal(headRes.status, 200);
+    assert.equal(await headRes.text(), "");
+
+    const postRes = await fetch(`http://127.0.0.1:${enabledServer.port}/dashboard`, {
+      method: "POST",
+    });
+    assert.equal(postRes.status, 405);
+    assert.equal(postRes.headers.get("allow"), "GET, HEAD");
+
+    const statsRes = await fetch(`http://127.0.0.1:${enabledServer.port}/dashboard/api/stats`);
+    assert.equal(statsRes.status, 200);
+    assert.equal(statsRes.headers.get("cache-control"), "no-store");
+    const rawStats = await statsRes.text();
+    // Host path privacy: physical cwd must NEVER appear in dashboard stats payload
+    assert.equal(rawStats.includes(process.cwd()), false);
+    const stats = JSON.parse(rawStats);
+    assert.equal(stats.server.profile, "workspace");
+    assert.equal(stats.workspace.roots.length, 1);
+    assert.equal(stats.workspace.roots[0].id, "root-1");
+    assert.equal(stats.workspace.roots[0].realPath, undefined);
+    assert.equal(stats.tools.length, 8);
+  } finally {
+    await enabledServer.close();
   }
 });

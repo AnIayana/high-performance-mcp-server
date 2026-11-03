@@ -14,6 +14,7 @@ import type { WorkspaceOperatorPolicy } from "../workspace/write-service.js";
 import { createServer } from "../server.js";
 import { closeWorkerPool } from "../workers/pool.js";
 import { log } from "../core/logger.js";
+import { buildDashboardStatsSnapshot, renderDashboardHtml } from "./dashboard.js";
 
 const HEALTH_BODY = '{"status":"ok"}';
 const HEALTH_CONTENT_LENGTH = Buffer.byteLength(HEALTH_BODY);
@@ -21,6 +22,16 @@ const HEALTH_CONTENT_LENGTH = Buffer.byteLength(HEALTH_BODY);
 const METHOD_NOT_ALLOWED_BODY =
   '{"error":"Method Not Allowed","message":"Only GET and HEAD methods are supported on /healthz"}';
 const METHOD_NOT_ALLOWED_CONTENT_LENGTH = Buffer.byteLength(METHOD_NOT_ALLOWED_BODY);
+
+const DASHBOARD_METHOD_NOT_ALLOWED_BODY =
+  '{"error":"Method Not Allowed","message":"Only GET and HEAD methods are supported on /dashboard endpoints"}';
+const DASHBOARD_METHOD_NOT_ALLOWED_CONTENT_LENGTH = Buffer.byteLength(
+  DASHBOARD_METHOD_NOT_ALLOWED_BODY
+);
+const DASHBOARD_HTML = renderDashboardHtml();
+const DASHBOARD_HTML_CONTENT_LENGTH = Buffer.byteLength(DASHBOARD_HTML, "utf8");
+const DASHBOARD_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'";
 
 export interface HttpTransportServerInstance {
   readonly server: HttpServer;
@@ -38,7 +49,8 @@ export async function createHttpTransportServer(
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
   networkCachePolicy?: NetworkCachePolicy,
-  workspacePolicy?: WorkspaceOperatorPolicy
+  workspacePolicy?: WorkspaceOperatorPolicy,
+  enableDashboard: boolean = false
 ): Promise<HttpTransportServerInstance> {
   const handler = createMcpHandler(() =>
     createServer({
@@ -97,6 +109,62 @@ export async function createHttpTransportServer(
       return;
     }
 
+    // 3b. Opt-in read-only loopback observability dashboard: /dashboard and /dashboard/api/stats
+    if (
+      enableDashboard &&
+      (parsedUrl.pathname === "/dashboard" || parsedUrl.pathname === "/dashboard/api/stats")
+    ) {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.writeHead(405, {
+          "Allow": "GET, HEAD",
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Content-Length": DASHBOARD_METHOD_NOT_ALLOWED_CONTENT_LENGTH,
+        });
+        res.end(DASHBOARD_METHOD_NOT_ALLOWED_BODY);
+        return;
+      }
+
+      if (parsedUrl.pathname === "/dashboard") {
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Content-Security-Policy": DASHBOARD_CSP,
+          "X-Content-Type-Options": "nosniff",
+          "Content-Length": DASHBOARD_HTML_CONTENT_LENGTH,
+        });
+        if (req.method === "HEAD") {
+          res.end();
+        } else {
+          res.end(DASHBOARD_HTML);
+        }
+        return;
+      }
+
+      const snapshot = buildDashboardStatsSnapshot({
+        port: assignedPort,
+        profile,
+        workspaceConfig,
+        workspacePolicy,
+        networkPolicy,
+        networkCachePolicy,
+      });
+      const jsonBody = JSON.stringify(snapshot);
+      const jsonByteLength = Buffer.byteLength(jsonBody, "utf8");
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Length": jsonByteLength,
+      });
+      if (req.method === "HEAD") {
+        res.end();
+      } else {
+        res.end(jsonBody);
+      }
+      return;
+    }
+
     // 4. Strict endpoint path routing: only /mcp is serviced
     if (parsedUrl.pathname !== "/mcp") {
       res.writeHead(404, { "Content-Type": "application/json" });
@@ -149,7 +217,8 @@ export async function startHttpTransport(
   workspaceConfig?: WorkspaceConfig,
   networkPolicy?: NetworkOperatorPolicy,
   networkCachePolicy?: NetworkCachePolicy,
-  workspacePolicy?: WorkspaceOperatorPolicy
+  workspacePolicy?: WorkspaceOperatorPolicy,
+  enableDashboard: boolean = false
 ): Promise<void> {
   const instance = await createHttpTransportServer(
     port,
@@ -157,12 +226,14 @@ export async function startHttpTransport(
     workspaceConfig,
     networkPolicy,
     networkCachePolicy,
-    workspacePolicy
+    workspacePolicy,
+    enableDashboard
   );
   log("info", "http_listening", {
     host: "127.0.0.1",
     port: instance.port,
     profile,
+    ...(enableDashboard ? { dashboard: "/dashboard" } : {}),
   });
 
   let isShuttingDown = false;

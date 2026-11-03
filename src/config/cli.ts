@@ -59,6 +59,7 @@ export interface ParsedCliConfig {
   action: CliAction;
   transport: "stdio" | "http";
   port: number;
+  dashboard?: boolean;
   profile: ToolProfile;
   roots: string[];
   workspacePolicy: WorkspaceOperatorPolicy;
@@ -124,6 +125,7 @@ export function getHelpText(): string {
     "Options:",
     "  --transport=<stdio|http>       Transport protocol to run (default: stdio)",
     "  --port=<number>                HTTP server port (default: 3000, only for http transport)",
+    "  --dashboard                    Enable read-only loopback observability dashboard at /dashboard (http transport)",
     "  --profile=<profile>            Security tool profile (default: safe)",
     "  --root=<path>                  Allowlisted workspace root (repeatable, max 16)",
     "  --workspace-max-write-bytes=<n> Operator hard cap for text write/edit size in bytes (1-5242880, default: 1048576)",
@@ -155,6 +157,7 @@ export function getHelpText(): string {
     "",
     "Environment Variables:",
     "  MCP_TRANSPORT                  Transport protocol override (stdio|http, default: stdio)",
+    "  MCP_DASHBOARD                  Enable loopback HTTP observability dashboard (true/1/false/0, default: false)",
     "  MCP_PROFILE                    Default tool profile override (safe|workspace|workspace_write|network|diagnostics|benchmark|admin|all)",
     "  PORT                           Default HTTP port override (e.g. 3000)",
     "  MCP_LOG_LEVEL                  Operational log level override (debug|info|warn|error|off, default: info)",
@@ -261,6 +264,9 @@ export function parseCliArgs(
   let cliWorkspaceWriteConfirmation: boolean | undefined;
   let envWorkspaceWriteConfirmation: boolean | undefined;
 
+  let cliDashboard: boolean | undefined;
+  let envDashboard: boolean | undefined;
+
   // Network conditional cache accumulators
   let cliCacheEnabled: boolean | undefined;
   let cliCacheMaxSizeBytes: number | undefined;
@@ -338,6 +344,19 @@ export function parseCliArgs(
       );
     }
     port = parsedPort;
+  }
+
+  if (env.MCP_DASHBOARD !== undefined && env.MCP_DASHBOARD.trim().length > 0) {
+    const val = env.MCP_DASHBOARD.trim().toLowerCase();
+    if (val === "true" || val === "1") {
+      envDashboard = true;
+    } else if (val === "false" || val === "0") {
+      envDashboard = false;
+    } else {
+      return errorResult(
+        `Invalid MCP_DASHBOARD environment variable: "${env.MCP_DASHBOARD}". Must be true or false.`
+      );
+    }
   }
 
   const envProfile = env.MCP_PROFILE?.trim().toLowerCase();
@@ -555,6 +574,7 @@ export function parseCliArgs(
   let seenCacheMaxEntries = false;
   let seenCacheTtl = false;
   let seenLogLevel = false;
+  let seenDashboard = false;
   let cliLogLevel: LogThreshold | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -608,6 +628,17 @@ export function parseCliArgs(
       }
       seenCache = true;
       cliCacheEnabled = true;
+      continue;
+    }
+
+    if (arg === "--dashboard") {
+      if (seenDashboard) {
+        return errorResult(
+          `Duplicate option specified: "--dashboard". This option may only be specified once.`
+        );
+      }
+      seenDashboard = true;
+      cliDashboard = true;
       continue;
     }
 
@@ -974,11 +1005,13 @@ export function parseCliArgs(
   }
 
   const transport: "stdio" | "http" = cliTransport ?? envTransport ?? "stdio";
+  const effectiveDashboard = cliDashboard ?? envDashboard ?? false;
 
   return {
     action,
     transport,
     port,
+    ...(effectiveDashboard ? { dashboard: true } : {}),
     profile,
     roots,
     workspacePolicy,

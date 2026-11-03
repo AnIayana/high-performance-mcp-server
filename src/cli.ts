@@ -62,7 +62,8 @@ async function main(): Promise<void> {
       workspaceConfig,
       config.networkPolicy,
       config.networkCachePolicy,
-      config.workspacePolicy
+      config.workspacePolicy,
+      config.dashboard ?? false
     );
   } else {
     await startStdioTransport(
