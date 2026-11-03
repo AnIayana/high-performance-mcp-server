@@ -190,14 +190,14 @@ import assert from "node:assert/strict";
 // Verify public functions
 assert.equal(typeof pkg.createServer, "function", "createServer must be exported");
 assert.equal(typeof pkg.resolveWorkspaceConfig, "function", "resolveWorkspaceConfig must be exported");
+assert.equal(typeof pkg.createWorkspaceOperatorPolicy, "function", "createWorkspaceOperatorPolicy must be exported");
+assert.equal(typeof pkg.createNetworkOperatorPolicy, "function", "createNetworkOperatorPolicy must be exported");
+assert.equal(typeof pkg.createNetworkCachePolicy, "function", "createNetworkCachePolicy must be exported");
 assert.equal(typeof createServer, "function", "named createServer must be exported");
 assert.equal(typeof resolveWorkspaceConfig, "function", "named resolveWorkspaceConfig must be exported");
 
 // Verify internal functions are NOT exported
 assert.equal(pkg.closeWorkerPool, undefined, "closeWorkerPool must not be exported");
-assert.equal(pkg.createWorkspaceOperatorPolicy, undefined, "createWorkspaceOperatorPolicy must not be exported");
-assert.equal(pkg.createNetworkOperatorPolicy, undefined, "createNetworkOperatorPolicy must not be exported");
-assert.equal(pkg.createNetworkCachePolicy, undefined, "createNetworkCachePolicy must not be exported");
 assert.equal(pkg.createHttpTransportServer, undefined, "createHttpTransportServer must not be exported");
 assert.equal(pkg.startHttpTransport, undefined, "startHttpTransport must not be exported");
 assert.equal(pkg.startStdioTransport, undefined, "startStdioTransport must not be exported");
