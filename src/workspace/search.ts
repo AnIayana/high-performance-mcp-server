@@ -52,6 +52,7 @@ export interface SearchFilesOptions {
   readonly caseSensitive?: boolean;
   readonly kind?: SearchFileKind;
   readonly includeIgnored?: boolean;
+  readonly extensions?: readonly string[];
   readonly maxResults?: number;
   readonly maxFiles?: number;
   readonly timeoutMs?: number;
@@ -66,6 +67,7 @@ export interface SearchFilesResult {
   readonly query: string;
   readonly caseSensitive: boolean;
   readonly kind: SearchFileKind;
+  readonly extensions?: readonly string[];
   readonly results: readonly SearchFileEntry[];
   readonly scannedEntries: number;
   readonly matchedEntries: number;
@@ -210,6 +212,8 @@ export async function searchFilesService(
   const caseSensitive = options.caseSensitive ?? false;
   const kind = options.kind ?? "all";
   const includeIgnored = options.includeIgnored ?? false;
+  const normalizedExtensions = normalizeExtensions(options.extensions);
+  const extensionSet = normalizedExtensions ? new Set(normalizedExtensions) : undefined;
   const effectiveMaxResults = Math.max(
     1,
     Math.min(MAX_SEARCH_RESULTS, options.maxResults ?? DEFAULT_SEARCH_MAX_RESULTS)
@@ -320,6 +324,13 @@ export async function searchFilesService(
         matchesKind = isDir;
       }
 
+      if (matchesKind && extensionSet) {
+        const ext = path.extname(dirent.name).toLowerCase();
+        if (!extensionSet.has(ext)) {
+          matchesKind = false;
+        }
+      }
+
       if (matchesKind) {
         const nameToMatch = caseSensitive ? dirent.name : dirent.name.toLowerCase();
         const pathToMatch = caseSensitive ? entryRelPath : entryRelPath.toLowerCase();
@@ -379,6 +390,7 @@ export async function searchFilesService(
     query,
     caseSensitive,
     kind,
+    ...(normalizedExtensions ? { extensions: normalizedExtensions } : {}),
     results,
     scannedEntries,
     matchedEntries: results.length,

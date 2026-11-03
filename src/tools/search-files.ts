@@ -57,6 +57,10 @@ export default function registerSearchFilesTool(
           .optional()
           .default(false)
           .describe("Whether to search inside common ignored directories like node_modules or .git (default: false)"),
+        extensions: z
+          .array(z.string())
+          .optional()
+          .describe("Optional list of file extensions to filter (e.g. ['.ts', '.md'] or ['ts', 'md'])"),
         maxResults: z
           .number()
           .int()
@@ -88,6 +92,7 @@ export default function registerSearchFilesTool(
         query: z.string(),
         caseSensitive: z.boolean(),
         kind: z.enum(["file", "directory", "all"]),
+        extensions: z.array(z.string()).optional(),
         results: z.array(
           z.object({
             path: z.string(),
@@ -142,6 +147,7 @@ export default function registerSearchFilesTool(
             caseSensitive: args.caseSensitive,
             kind: args.kind,
             includeIgnored: args.includeIgnored,
+            extensions: args.extensions,
             maxResults: args.maxResults,
             maxFiles: args.maxFiles,
             timeoutMs: args.timeoutMs,

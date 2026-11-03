@@ -517,3 +517,30 @@ test("Workspace Search — searchTextService contextLines behavior and boundarie
     fixture.cleanup();
   }
 });
+
+test("Search Service — searchFilesService extensions filter", async () => {
+  const fixture = createSearchFixture();
+  try {
+    // Without extensions filter: finds both .ts and .md files matching "a" or "."
+    const tsOnly = await searchFilesService(fixture.config, "root-1", "index", {
+      extensions: ["ts"],
+    });
+    assert.deepEqual(tsOnly.extensions, [".ts"]);
+    assert.ok(tsOnly.results.length >= 1);
+    assert.ok(tsOnly.results.every((r) => r.name.endsWith(".ts")));
+
+    const mdOnly = await searchFilesService(fixture.config, "root-1", "README", {
+      extensions: [".MD"],
+    });
+    assert.deepEqual(mdOnly.extensions, [".md"]);
+    assert.equal(mdOnly.results.length, 1);
+    assert.equal(mdOnly.results[0]?.name, "README.md");
+
+    const noMatchExt = await searchFilesService(fixture.config, "root-1", "README", {
+      extensions: [".ts"],
+    });
+    assert.equal(noMatchExt.results.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
